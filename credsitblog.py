@@ -950,6 +950,18 @@ if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("pa
             # This will be handled in the main app area for detailed output
             st.session_state["run_detailed_test"] = True
             st.rerun()
+    
+    # Add 500 Error Helper Button
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🛠️ Fix 500"):
+            st.session_state["show_500_fix"] = True
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Reset Auth"):
+            st.session_state["show_auth_reset"] = True
+            st.rerun()
 
 else:
     st.sidebar.warning("⚠️ WordPress not configured")
@@ -969,14 +981,10 @@ else:
     st.sidebar.warning("⚠️ Hugging Face not configured")
 
 def test_wordpress_connection_detailed(wp_config):
-    """Detailed WordPress connection testing with improved error handling"""
+    """Enhanced WordPress connection testing with specific 500 error diagnosis"""
     wp_base = wp_config["base_url"].rstrip('/')
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    headers = {
-        "Authorization": f"Basic {auth_token}",
-        "Content-Type": "application/json"
-    }
     
     st.write("**Testing WordPress Connection...**")
     
@@ -993,10 +1001,9 @@ def test_wordpress_connection_detailed(wp_config):
         st.error(f"❌ Cannot reach website: {str(e)}")
         return False
     
-    # Test 2: REST API discovery
-    st.write("🔍 **Test 2: REST API Discovery**")
+    # Test 2: REST API discovery without auth
+    st.write("🔍 **Test 2: REST API Discovery (No Auth)**")
     try:
-        # Check if REST API endpoint is discoverable
         response = requests.get(f"{wp_base}/wp-json/", timeout=15)
         if response.status_code == 200:
             try:
@@ -1013,44 +1020,150 @@ def test_wordpress_connection_detailed(wp_config):
         st.error(f"❌ REST API error: {str(e)}")
         return False
     
-    # Test 3: Authentication
-    st.write("🔍 **Test 3: Authentication Test**")
+    # Test 3: Permalink structure check
+    st.write("🔍 **Test 3: Permalink Structure Check**")
     try:
-        response = requests.get(f"{wp_base}/wp-json/wp/v2/users/me", headers=headers, timeout=15)
-        if response.status_code == 200:
+        # Test both permalink formats
+        rest_formats = [
+            f"{wp_base}/wp-json/wp/v2/",
+            f"{wp_base}/?rest_route=/wp/v2/"
+        ]
+        
+        permalink_working = False
+        for rest_url in rest_formats:
             try:
-                user_data = response.json()
-                st.success(f"✅ Authentication successful")
-                st.write(f"Logged in as: {user_data.get('name', 'Unknown')} (ID: {user_data.get('id', 'Unknown')})")
-                st.write(f"User roles: {', '.join(user_data.get('roles', []))}")
+                response = requests.get(rest_url, timeout=10)
+                if response.status_code == 200:
+                    st.success(f"✅ Permalink working: {rest_url}")
+                    permalink_working = True
+                    break
             except:
-                st.error("❌ Authentication response invalid")
-                return False
-        elif response.status_code == 401:
-            st.error("❌ Authentication failed - check username/password")
+                continue
+        
+        if not permalink_working:
+            st.error("❌ Neither permalink format working - check WordPress permalink settings")
+            st.markdown("**Fix:** Go to WordPress Admin → Settings → Permalinks → Save Changes")
             return False
-        elif response.status_code == 403:
-            st.error("❌ Authentication forbidden - check user permissions")
-            return False
-        elif response.status_code == 500:
-            st.error("❌ Server error (HTTP 500) - This usually indicates:")
-            st.markdown("""
-            - Wrong application password format
-            - Plugin conflicts (try disabling security plugins temporarily)
-            - Server-side authentication issues
-            - WordPress configuration problems
-            """)
-            return False
-        else:
-            st.error(f"❌ Authentication error (HTTP {response.status_code})")
-            return False
+            
     except Exception as e:
-        st.error(f"❌ Authentication test error: {str(e)}")
+        st.warning(f"⚠️ Permalink test inconclusive: {str(e)}")
+    
+    # Test 4: Authentication with multiple header formats
+    st.write("🔍 **Test 4: Authentication Test (Multiple Formats)**")
+    
+    auth_tests = [
+        {
+            "name": "Standard Basic Auth",
+            "headers": {
+                "Authorization": f"Basic {auth_token}",
+                "Content-Type": "application/json"
+            }
+        },
+        {
+            "name": "Basic Auth without Content-Type",
+            "headers": {
+                "Authorization": f"Basic {auth_token}"
+            }
+        },
+        {
+            "name": "Username:Password format",
+            "auth": (wp_config['username'], wp_config['password']),
+            "headers": {"Content-Type": "application/json"}
+        }
+    ]
+    
+    auth_success = False
+    for test in auth_tests:
+        try:
+            st.write(f"Testing: {test['name']}")
+            
+            if 'auth' in test:
+                response = requests.get(
+                    f"{wp_base}/wp-json/wp/v2/users/me", 
+                    auth=test['auth'],
+                    headers=test.get('headers', {}),
+                    timeout=15
+                )
+            else:
+                response = requests.get(
+                    f"{wp_base}/wp-json/wp/v2/users/me", 
+                    headers=test['headers'],
+                    timeout=15
+                )
+            
+            if response.status_code == 200:
+                try:
+                    user_data = response.json()
+                    st.success(f"✅ Authentication successful with {test['name']}")
+                    st.write(f"Logged in as: {user_data.get('name', 'Unknown')} (ID: {user_data.get('id', 'Unknown')})")
+                    st.write(f"User roles: {', '.join(user_data.get('roles', []))}")
+                    auth_success = True
+                    break
+                except:
+                    st.error(f"❌ {test['name']}: Authentication response invalid")
+            elif response.status_code == 500:
+                st.error(f"❌ {test['name']}: Server error (HTTP 500)")
+                # Log the actual error response for debugging
+                st.code(f"Response: {response.text[:300]}")
+            elif response.status_code == 401:
+                st.error(f"❌ {test['name']}: Authentication failed (HTTP 401)")
+            elif response.status_code == 403:
+                st.error(f"❌ {test['name']}: Access forbidden (HTTP 403)")
+            else:
+                st.error(f"❌ {test['name']}: HTTP {response.status_code}")
+                
+        except Exception as e:
+            st.error(f"❌ {test['name']}: {str(e)}")
+    
+    if not auth_success:
+        st.error("❌ All authentication methods failed")
+        
+        # Detailed 500 error troubleshooting
+        st.subheader("🛠️ HTTP 500 Error Troubleshooting")
+        st.markdown("""
+        **Your site is returning HTTP 500 errors. Here's how to fix it:**
+        
+        **1. Application Password Format:**
+        - Go to WordPress Admin → Users → Your Profile
+        - Delete ALL existing application passwords
+        - Create a NEW application password
+        - Copy the EXACT password including spaces (e.g., `abcd efgh ijkl mnop`)
+        - Do NOT remove spaces or modify the password
+        
+        **2. Security Plugin Check:**
+        - Temporarily deactivate WordFence, Sucuri, or any security plugins
+        - Check if the error persists
+        - Look for "REST API" blocking in plugin settings
+        
+        **3. Plugin Conflicts:**
+        - Deactivate ALL plugins temporarily
+        - Test the REST API again
+        - If it works, reactivate plugins one by one to find the culprit
+        
+        **4. Server Configuration:**
+        - Contact your hosting provider (looks like you're using a hosting service)
+        - Ask them to check for REST API blocking
+        - Ensure mod_rewrite is enabled
+        
+        **5. WordPress Core Issue:**
+        - Update WordPress to the latest version
+        - Check if your theme supports REST API
+        
+        **6. .htaccess File:**
+        - Backup your .htaccess file
+        - Delete it temporarily
+        - Go to WordPress Admin → Settings → Permalinks → Save
+        - Test again
+        """)
         return False
     
-    # Test 4: Posts endpoint access
-    st.write("🔍 **Test 4: Posts Endpoint Access**")
+    # Test 5: Posts endpoint access
+    st.write("🔍 **Test 5: Posts Endpoint Access**")
     try:
+        headers = {
+            "Authorization": f"Basic {auth_token}",
+            "Content-Type": "application/json"
+        }
         response = requests.get(f"{wp_base}/wp-json/wp/v2/posts?per_page=1", headers=headers, timeout=15)
         if response.status_code == 200:
             try:
@@ -1067,18 +1180,24 @@ def test_wordpress_connection_detailed(wp_config):
         st.error(f"❌ Posts endpoint test error: {str(e)}")
         return False
     
-    # Test 5: Create permission test
-    st.write("🔍 **Test 5: Create Post Permission Test**")
+    # Test 6: Create permission test with better error handling
+    st.write("🔍 **Test 6: Create Post Permission Test**")
     try:
         test_post_data = {
-            "title": "Test Post - Delete Me",
-            "content": "This is a test post. Please delete.",
+            "title": "REST API Test - Please Delete",
+            "content": "This is a test post created by the REST API. Please delete this post.",
             "status": "draft"
+        }
+        
+        headers = {
+            "Authorization": f"Basic {auth_token}",
+            "Content-Type": "application/json"
         }
         
         response = requests.post(f"{wp_base}/wp-json/wp/v2/posts", 
                                headers=headers, 
-                               json=test_post_data, timeout=20)
+                               json=test_post_data, 
+                               timeout=30)
         
         if response.status_code == 201:
             try:
@@ -1094,32 +1213,18 @@ def test_wordpress_connection_detailed(wp_config):
                 else:
                     st.warning(f"⚠️ Test post created but couldn't delete (ID: {post_data.get('id')})")
                 
-            except:
-                st.error("❌ Post creation response invalid")
+            except Exception as e:
+                st.error(f"❌ Post creation response invalid: {str(e)}")
                 return False
-        elif response.status_code == 401:
-            st.error("❌ No permission to create posts - authentication issue")
-            return False
-        elif response.status_code == 403:
-            st.error("❌ No permission to create posts - user role issue")
-            return False
-        elif response.status_code == 500:
-            st.error("❌ Server error (HTTP 500) during post creation")
-            st.markdown("""
-            **Common causes:**
-            - Application password format is incorrect
-            - Security plugins blocking REST API
-            - Server configuration issues
-            - Plugin conflicts
-            """)
-            return False
         else:
             st.error(f"❌ Post creation failed (HTTP {response.status_code})")
+            if response.status_code == 500:
+                st.code(f"Error details: {response.text[:500]}")
             try:
                 error_data = response.json()
-                st.write(f"Error details: {error_data.get('message', 'Unknown error')}")
+                st.write(f"Error message: {error_data.get('message', 'Unknown error')}")
             except:
-                st.write(f"Response: {response.text[:200]}...")
+                st.write(f"Raw response: {response.text[:200]}...")
             return False
     except Exception as e:
         st.error(f"❌ Post creation test error: {str(e)}")
@@ -1165,6 +1270,110 @@ if st.session_state.get("run_detailed_test"):
     
     # Clear the test flag
     st.session_state["run_detailed_test"] = False
+
+# Handle 500 Error Fix Guide
+if st.session_state.get("show_500_fix"):
+    st.header("🛠️ WordPress 500 Error Fix Guide")
+    
+    st.markdown("""
+    **You're getting HTTP 500 errors. Follow these steps in order:**
+    
+    ### Step 1: Generate New Application Password
+    1. Go to your WordPress Admin Dashboard
+    2. Navigate to **Users → Your Profile**
+    3. Scroll down to **"Application Passwords"** section
+    4. **Delete ALL existing application passwords**
+    5. In the "Add New Application Password" field, enter: `Streamlit App`
+    6. Click **"Add New Application Password"**
+    7. **Copy the ENTIRE password including spaces** (e.g., `abcd efgh ijkl mnop`)
+    8. Update the password in this app's configuration
+    
+    ### Step 2: Check Security Plugins
+    """)
+    
+    security_plugins = [
+        "WordFence Security",
+        "Sucuri Security", 
+        "iThemes Security",
+        "All In One WP Security",
+        "Jetpack Security"
+    ]
+    
+    for plugin in security_plugins:
+        st.write(f"- {plugin}")
+    
+    st.markdown("""
+    **Temporarily deactivate these plugins** and test again.
+    
+    ### Step 3: Check REST API Settings
+    Some plugins have specific REST API blocking settings:
+    - Look for "REST API" or "JSON API" in plugin settings
+    - Ensure REST API is not blocked for authenticated users
+    
+    ### Step 4: Plugin Conflict Test
+    1. Deactivate **ALL plugins**
+    2. Test the connection again
+    3. If it works, reactivate plugins **one by one**
+    4. Test after each activation to find the conflicting plugin
+    
+    ### Step 5: Permalink Settings
+    1. Go to **Settings → Permalinks**
+    2. Choose any permalink structure (not "Plain")
+    3. Click **"Save Changes"**
+    4. Test again
+    
+    ### Step 6: Contact Hosting Provider
+    If none of the above work, contact your hosting provider and ask them to:
+    - Check if REST API is blocked server-side
+    - Enable mod_rewrite if it's disabled
+    - Check error logs for specific PHP errors
+    """)
+    
+    if st.button("✅ I've tried these steps"):
+        st.session_state["show_500_fix"] = False
+        st.rerun()
+
+# Handle Auth Reset Guide  
+if st.session_state.get("show_auth_reset"):
+    st.header("🔄 Reset Authentication Guide")
+    
+    st.markdown("""
+    **Follow these exact steps to reset your authentication:**
+    
+    ### WordPress Admin Steps:
+    1. **Log into WordPress Admin** using your regular username/password
+    2. Go to **Users → All Users**
+    3. Click on your username to edit your profile
+    4. Scroll down to **"Application Passwords"** section
+    5. **Delete ALL existing application passwords** (click the X next to each)
+    6. Create a new one:
+       - Name: `StreamlitApp` 
+       - Click **"Add New Application Password"**
+    7. **IMPORTANT:** Copy the password EXACTLY as shown (with spaces)
+    
+    ### App Configuration Steps:
+    1. In this app, go to **WordPress Configuration** in the sidebar
+    2. Check **"Use Custom WordPress Settings"**
+    3. Enter your details:
+       - **Website URL:** `https://credsir.com` (no trailing slash)
+       - **Username:** `nishitkumar` (case-sensitive)
+       - **Application Password:** Paste the EXACT password with spaces
+    4. Click **"Save Config"**
+    5. Try the **"Quick Test"** button
+    
+    ### Common Mistakes to Avoid:
+    - ❌ Don't remove spaces from the application password
+    - ❌ Don't add /wp-admin to the website URL
+    - ❌ Don't use your regular login password
+    - ❌ Don't leave old application passwords active
+    
+    ### Test Format:
+    Your application password should look like: `abcd efgh ijkl mnop` (with spaces)
+    """)
+    
+    if st.button("✅ Authentication Reset Complete"):
+        st.session_state["show_auth_reset"] = False
+        st.rerun()
     
 # Main App
 st.title("📚 Enhanced SEO Content Automation")
