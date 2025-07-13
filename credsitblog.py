@@ -1853,6 +1853,7 @@ with tab5:
                             "has_metadata": "Yes"
                         })
                     else:
+                        st.json(result)
                         error_message = result.get("error", "No error message found")
                         st.error(f"❌ Publishing failed: {error_message}")
 
