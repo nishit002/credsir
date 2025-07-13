@@ -683,7 +683,10 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
     wp_base = wp_config["base_url"]
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {auth_token}"}
+    headers = {
+        "Authorization": f"Basic {auth_token}",
+        "Content-Type": "application/json"
+    }
     
     # Use SEO title if available
     final_title = metadata.get('seo_title', title) if metadata else title
@@ -725,6 +728,27 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         "content": html_content,
         "status": "publish" if publish_now else "draft"
     }
+    
+    if tag_ids:
+        post_data["tags"] = tag_ids
+    
+    if img_id:
+        post_data["featured_media"] = img_id
+    
+    if metadata and metadata.get('meta_description'):
+        post_data["excerpt"] = metadata['meta_description']
+    
+    try:
+        post_url = f"{wp_base}/wp-json/wp/v2/posts"
+        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=20)
+        
+        if post_resp.status_code == 201:
+            article_url = post_resp.json()["link"]
+            return {"success": True, "url": article_url}
+        else:
+            return {"success": False, "error": f"HTTP {post_resp.status_code}: {post_resp.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     
     if tag_ids:
         post_data["tags"] = tag_ids
