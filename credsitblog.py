@@ -971,7 +971,6 @@ if current_api_key:
     st.sidebar.success(f"✅ {ai_provider} API key found")
 else:
     st.sidebar.error(f"❌ {ai_provider} API key not found")
-
 # WordPress Configuration
 st.sidebar.header("🌐 WordPress Configuration")
 
@@ -981,25 +980,72 @@ use_custom_wp = st.sidebar.checkbox("Use Custom WordPress Settings", value=bool(
 if use_custom_wp:
     with st.sidebar.form("wp_config_form"):
         st.write("**Custom WordPress Settings:**")
-        wp_base_url = st.text_input("Website URL", value=st.session_state["custom_wp_config"].get("base_url", ""), placeholder="https://yoursite.com")
-        wp_username = st.text_input("Username", value=st.session_state["custom_wp_config"].get("username", ""), placeholder="admin")
-        wp_password = st.text_input("Application Password", value=st.session_state["custom_wp_config"].get("password", ""), placeholder="xxxx xxxx xxxx xxxx", type="password")
         
-        if st.form_submit_button("💾 Save WordPress Config"):
-            if wp_base_url and wp_username and wp_password:
-                # Clean URL
-                parsed_url = urlparse(wp_base_url)
-                clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                
-                st.session_state["custom_wp_config"] = {
-                    "base_url": clean_url,
-                    "username": wp_username,
-                    "password": wp_password
-                }
-                st.sidebar.success("✅ WordPress config saved!")
+        # Help text
+        with st.expander("ℹ️ WordPress Setup Help"):
+            st.markdown("""
+            **How to get WordPress credentials:**
+            
+            1. **Website URL**: Your WordPress site URL (e.g., https://yoursite.com)
+            2. **Username**: Your WordPress admin username
+            3. **Application Password**: 
+               - Go to: WordPress Admin → Users → Your Profile
+               - Scroll to "Application Passwords"
+               - Enter name (e.g., "API Access") and click "Add New"
+               - Copy the generated password (format: xxxx xxxx xxxx xxxx)
+            
+            **Requirements:**
+            - WordPress 5.6+ (Application Passwords feature)
+            - REST API enabled (usually enabled by default)
+            - User with 'publish_posts' capability
+            """)
+        
+        wp_base_url = st.text_input(
+            "Website URL", 
+            value=st.session_state["custom_wp_config"].get("base_url", ""), 
+            placeholder="https://yoursite.com",
+            help="Your WordPress website URL (without /wp-admin)"
+        )
+        
+        wp_username = st.text_input(
+            "Username", 
+            value=st.session_state["custom_wp_config"].get("username", ""), 
+            placeholder="admin",
+            help="Your WordPress admin username"
+        )
+        
+        wp_password = st.text_input(
+            "Application Password", 
+            value=st.session_state["custom_wp_config"].get("password", ""), 
+            placeholder="xxxx xxxx xxxx xxxx", 
+            type="password",
+            help="WordPress Application Password (not your regular password)"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.form_submit_button("💾 Save Config"):
+                if wp_base_url and wp_username and wp_password:
+                    # Clean URL
+                    parsed_url = urlparse(wp_base_url)
+                    clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    
+                    st.session_state["custom_wp_config"] = {
+                        "base_url": clean_url,
+                        "username": wp_username,
+                        "password": wp_password
+                    }
+                    st.sidebar.success("✅ WordPress config saved!")
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ Please fill all fields")
+        
+        with col2:
+            if st.form_submit_button("🧹 Clear Config"):
+                st.session_state["custom_wp_config"] = {}
+                st.sidebar.success("✅ Config cleared!")
                 st.rerun()
-            else:
-                st.sidebar.error("❌ Please fill all fields")
     
     wp_config = st.session_state["custom_wp_config"]
 else:
@@ -1010,54 +1056,87 @@ else:
         "password": st.secrets.get("WP_PASSWORD", "")
     }
 
-# WordPress status
+# WordPress status and testing
 if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("password"):
     st.sidebar.success("✅ WordPress configured")
     
-    # Test connection and fetch tags
-    if st.sidebar.button("🔍 Test WordPress Connection"):
-        try:
-            auth_str = f"{wp_config['username']}:{wp_config['password']}"
-            auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-            headers = {"Authorization": f"Basic {auth_token}"}
-            
-            # Test basic API access
-            test_url = f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=1"
-            response = requests.get(test_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                st.sidebar.success("✅ WordPress connection successful!")
+    # Show basic info
+    with st.sidebar.expander("📋 WordPress Details"):
+        st.write(f"**URL:** {wp_config['base_url']}")
+        st.write(f"**User:** {wp_config['username']}")
+        st.write(f"**Password:** {'*' * len(wp_config['password'])}")
+    
+    # Enhanced testing buttons
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("🔍 Quick Test"):
+            try:
+                auth_str = f"{wp_config['username']}:{wp_config['password']}"
+                auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+                headers = {"Authorization": f"Basic {auth_token}"}
                 
-                # Fetch existing tags
-                with st.sidebar:
-                    with st.spinner("Fetching existing tags..."):
-                        existing_tags = get_wordpress_tags(wp_config)
-                        st.session_state["existing_tags"] = existing_tags
-                        
-                        if existing_tags:
-                            st.sidebar.info(f"📋 Fetched {len(existing_tags)} existing tags")
-                        else:
-                            st.sidebar.info("📋 No existing tags found or unable to fetch tags")
+                # Test basic API access
+                test_url = f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=1"
+                response = requests.get(test_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    st.sidebar.success("✅ Connection OK!")
+                elif response.status_code == 401:
+                    st.sidebar.error("❌ Auth failed")
+                elif response.status_code == 403:
+                    st.sidebar.error("❌ Access denied")
+                elif response.status_code == 404:
+                    st.sidebar.error("❌ API not found")
+                else:
+                    st.sidebar.error(f"❌ Error: {response.status_code}")
             
-            elif response.status_code == 401:
-                st.sidebar.error("❌ Authentication failed: Invalid username or password")
-            elif response.status_code == 403:
-                st.sidebar.error("❌ Access forbidden: Check user permissions")
-            elif response.status_code == 404:
-                st.sidebar.error("❌ WordPress REST API not found. Check URL and ensure REST API is enabled")
-            else:
-                response_text = response.text[:100] + "..." if len(response.text) > 100 else response.text
-                st.sidebar.error(f"❌ Connection failed: HTTP {response.status_code}")
-                st.sidebar.error(f"Response: {response_text}")
-        
-        except requests.exceptions.Timeout:
-            st.sidebar.error("❌ Connection timeout. Please check your WordPress URL.")
-        except requests.exceptions.RequestException as e:
-            st.sidebar.error(f"❌ Network error: {str(e)}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Connection error: {str(e)}")
+            except requests.exceptions.Timeout:
+                st.sidebar.error("❌ Timeout")
+            except Exception as e:
+                st.sidebar.error(f"❌ Error: {str(e)[:20]}...")
+    
+    with col2:
+        if st.button("📊 Full Test"):
+            # This will be handled in the main app area for detailed output
+            st.session_state["run_detailed_test"] = True
+            st.rerun()
+    
+    # Auto-fetch existing tags and posts info
+    if st.sidebar.button("🔄 Fetch Site Data"):
+        with st.sidebar:
+            with st.spinner("Fetching..."):
+                # Fetch existing tags
+                existing_tags = get_wordpress_tags(wp_config)
+                st.session_state["existing_tags"] = existing_tags
+                
+                # Fetch basic posts info
+                try:
+                    auth_str = f"{wp_config['username']}:{wp_config['password']}"
+                    auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+                    headers = {"Authorization": f"Basic {auth_token}"}
+                    
+                    posts_url = f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=5"
+                    posts_response = requests.get(posts_url, headers=headers, timeout=10)
+                    
+                    if posts_response.status_code == 200:
+                        posts = posts_response.json()
+                        st.sidebar.success(f"📋 {len(existing_tags)} tags, {len(posts)} recent posts")
+                    else:
+                        st.sidebar.warning("⚠️ Could not fetch posts")
+                        
+                except Exception as e:
+                    st.sidebar.warning("⚠️ Partial data fetched")
+
 else:
     st.sidebar.warning("⚠️ WordPress not configured")
+    
+    if not wp_config.get("base_url"):
+        st.sidebar.error("Missing: Website URL")
+    if not wp_config.get("username"):
+        st.sidebar.error("Missing: Username")
+    if not wp_config.get("password"):
+        st.sidebar.error("Missing: Password")
 
 # Initialize HF client
 hf_client = init_hf_client()
@@ -1098,7 +1177,30 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
+# Handle detailed WordPress testing
+if st.session_state.get("run_detailed_test"):
+    st.header("🔍 WordPress Connection Diagnostic")
+    
+    if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("password"):
+        
+        # Show WordPress info
+        st.subheader("📊 WordPress Information")
+        get_wordpress_info(wp_config)
+        
+        st.subheader("🧪 Detailed Connection Test")
+        if test_wordpress_connection_detailed(wp_config):
+            st.success("🎉 All tests passed! Your WordPress is ready for publishing.")
+        else:
+            st.error("❌ Some tests failed. Please check the errors above and your WordPress configuration.")
+    
+    else:
+        st.error("❌ WordPress configuration incomplete")
+    
+    # Clear the test flag
+    st.session_state["run_detailed_test"] = False
+    
+    if st.button("↩️ Back to Main App"):
+        st.rerun()
 # Tabs
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📤 Bulk Upload", 
@@ -1788,11 +1890,27 @@ with tab5:
         wp_config.get("username") and 
         wp_config.get("password")):
         
-        st.subheader("📤 Streamlined Publishing")
-        st.info("🚀 **Simple & Fast**: Articles will be published as HTML with metadata. Tags and images are optional - the system won't halt if they fail.")
+        st.subheader("📤 Enhanced Publishing")
+        st.info("✨ **Smart Publishing**: Articles will always attempt to publish. Images and tags are optional - if they fail, the article still gets published!")
         
-        publish_mode = st.radio("Publishing Mode", ["Draft", "Publish Immediately"])
-        publish_now = publish_mode == "Publish Immediately"
+        # Publishing options
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            publish_mode = st.radio("Publishing Mode", ["Draft", "Publish Immediately"])
+            publish_now = publish_mode == "Publish Immediately"
+        
+        with col2:
+            force_minimal = st.checkbox("Force Minimal Publishing", help="Skip images and tags, publish only title and content")
+        
+        with col3:
+            if st.button("🧪 Test WordPress First"):
+                with st.spinner("Testing WordPress connection..."):
+                    test_success = test_wordpress_connection_detailed(wp_config)
+                    if test_success:
+                        st.success("✅ WordPress is ready!")
+                    else:
+                        st.error("❌ WordPress connection issues detected")
         
         # Single article publishing
         st.subheader("📝 Publish Single Article")
@@ -1804,44 +1922,70 @@ with tab5:
             article_data = st.session_state["uploaded_articles"][selected_file]
             metadata = st.session_state["article_metadata"][selected_file]
             
-            # Preview publishing details
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Original Title:** {article_data['title'][:50]}...")
-                st.write(f"**SEO Title:** {metadata.get('seo_title', 'Using original title')[:50]}...")
-                st.write(f"**Has Image:** {'✅' if selected_file in st.session_state['images'] else '❌'}")
+            # Enhanced preview with more details
+            with st.expander("📋 Publishing Preview", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Original Title:** {article_data['title']}")
+                    st.write(f"**SEO Title:** {metadata.get('seo_title', 'Will use original title')}")
+                    st.write(f"**Content Length:** {len(article_data['content'])} characters")
+                    st.write(f"**Has Image:** {'✅ Yes' if selected_file in st.session_state['images'] else '❌ No'}")
+                
+                with col2:
+                    st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'None')}")
+                    st.write(f"**Meta Description:** {metadata.get('meta_description', 'None')[:50]}...")
+                    st.write(f"**Tags:** {len(metadata.get('tags', []))} tags")
+                    st.write(f"**Category:** {metadata.get('category', 'None')}")
+                
+                # Show actual tags
+                if metadata.get('tags'):
+                    st.write(f"**Tag List:** {', '.join(metadata['tags'])}")
             
-            with col2:
-                st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'None')}")
-                st.write(f"**Category:** {metadata.get('category', 'None')}")
-                st.write(f"**Status:** {publish_mode}")
-            
-            if st.button("📤 Publish Selected Article"):
+            # Publishing button with enhanced feedback
+            if st.button("📤 Publish Selected Article", type="primary"):
                 with st.spinner("Publishing to WordPress..."):
-                    # Get image buffer if available
+                    
+                    # Prepare image buffer if available and not forcing minimal
                     image_buffer = None
-                    if selected_file in st.session_state["images"]:
+                    if not force_minimal and selected_file in st.session_state["images"]:
                         try:
                             image_data = st.session_state["images"][selected_file]
                             image_data["buffer"].seek(0)
                             image_buffer = image_data["buffer"]
-                        except:
-                            pass  # Continue without image if there's an error
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not prepare image: {str(e)}")
                     
-                    # Publish using streamlined function
+                    # Publish using enhanced function
                     result = publish_to_wordpress_streamlined(
                         article_data['title'],
                         article_data['content'],
-                        metadata,
+                        metadata if not force_minimal else None,
                         image_buffer,
                         wp_config,
                         publish_now
                     )
                     
+                    # Enhanced result display
                     if result["success"]:
-                        st.markdown('<div class="success-box">✅ Published successfully!</div>', unsafe_allow_html=True)
-                        st.success(f"🔗 **URL:** {result['url']}")
-                        st.info(f"📸 **Image:** {'✅ Uploaded' if result.get('has_image') else '❌ Not uploaded'}")
+                        st.markdown("""
+                        <div style='background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); 
+                                   padding: 1.5rem; border-radius: 12px; border-left: 4px solid #28a745; margin: 1rem 0;'>
+                            <h3 style='color: #155724; margin: 0;'>✅ Published Successfully!</h3>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        st.success(f"🔗 **Article URL:** {result['url']}")
+                        st.info(f"📊 **Status:** {result.get('message', 'Published successfully')}")
+                        
+                        # Detailed success info
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Image", "✅ Yes" if result.get('has_image') else "❌ No")
+                        with col2:
+                            st.metric("Tags", "✅ Yes" if result.get('has_tags') else "❌ No")
+                        with col3:
+                            st.metric("Status", "Published" if publish_now else "Draft")
                         
                         # Log the publication
                         st.session_state["publish_log"].append({
@@ -1850,79 +1994,184 @@ with tab5:
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "status": "Published" if publish_now else "Draft",
                             "has_image": "Yes" if result.get('has_image') else "No",
+                            "has_tags": "Yes" if result.get('has_tags') else "No",
                             "has_metadata": "Yes"
                         })
+                        
+                        # Quick actions
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.link_button("🌐 View Article", result['url'])
+                        with col2:
+                            if st.button("📋 Copy URL"):
+                                st.code(result['url'])
+                    
                     else:
-                        st.json(result)
-                        error_message = result.get("error", "No error message found")
-                        st.error(f"❌ Publishing failed: {error_message}")
-
+                        st.markdown("""
+                        <div style='background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%); 
+                                   padding: 1.5rem; border-radius: 12px; border-left: 4px solid #dc3545; margin: 1rem 0;'>
+                            <h3 style='color: #721c24; margin: 0;'>❌ Publishing Failed</h3>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        error_message = result.get("error", "Unknown error")
+                        st.error(f"**Error:** {error_message}")
+                        
+                        # Show detailed error information
+                        with st.expander("🔍 Error Details"):
+                            st.write(f"**Title:** {result.get('title', 'Unknown')}")
+                            st.write(f"**Error:** {error_message}")
+                            
+                            if result.get("response"):
+                                st.write(f"**Server Response:** {result['response']}")
+                        
+                        # Troubleshooting suggestions
+                        st.subheader("🛠️ Troubleshooting Suggestions")
+                        
+                        if "authentication" in error_message.lower() or "401" in error_message:
+                            st.warning("**Authentication Issue:** Check your WordPress username and application password")
+                        elif "permission" in error_message.lower() or "403" in error_message:
+                            st.warning("**Permission Issue:** Ensure your user has 'publish_posts' capability")
+                        elif "timeout" in error_message.lower():
+                            st.warning("**Timeout Issue:** Your WordPress server may be slow. Try again or contact your hosting provider")
+                        elif "connection" in error_message.lower():
+                            st.warning("**Connection Issue:** Check your WordPress URL and internet connection")
+                        else:
+                            st.info("**General Troubleshooting:**")
+                            st.write("1. Test WordPress connection using the 'Test WordPress First' button")
+                            st.write("2. Try 'Force Minimal Publishing' to publish without images/tags")
+                            st.write("3. Check if WordPress REST API is enabled")
+                            st.write("4. Verify your Application Password is correctly formatted")
         
-        # Bulk publishing
+        # Bulk publishing section
         st.subheader("🚀 Bulk Publishing")
         
         if ready_articles:
-            st.info(f"Ready to publish: {len(ready_articles)} articles")
+            st.info(f"📊 Ready to publish: **{len(ready_articles)}** articles")
             
-            # Show what will be published
-            with st.expander("📋 Preview Articles to Publish"):
+            # Bulk publishing options
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                bulk_delay = st.selectbox("Delay Between Posts", ["2 seconds", "5 seconds", "10 seconds"], index=1)
+                delay_seconds = int(bulk_delay.split()[0])
+            
+            with col2:
+                skip_failed = st.checkbox("Skip Failed Articles", value=True, help="Continue publishing even if some articles fail")
+            
+            with col3:
+                show_progress_details = st.checkbox("Show Detailed Progress", value=True)
+            
+            # Preview what will be published
+            with st.expander("📋 Preview Bulk Publishing"):
+                preview_data = []
                 for file_name in ready_articles:
                     article_data = st.session_state["uploaded_articles"][file_name]
                     metadata = st.session_state["article_metadata"][file_name]
-                    has_image = "✅" if file_name in st.session_state["images"] else "❌"
                     
-                    st.write(f"**{metadata.get('seo_title', article_data['title'])}** - Image: {has_image}")
+                    preview_data.append({
+                        "Title": metadata.get('seo_title', article_data['title'])[:40] + "...",
+                        "Has Image": "✅" if file_name in st.session_state["images"] else "❌",
+                        "Tags": len(metadata.get('tags', [])),
+                        "Category": metadata.get('category', 'None'),
+                        "Keyword": metadata.get('primary_keyword', 'None')
+                    })
+                
+                preview_df = pd.DataFrame(preview_data)
+                st.dataframe(preview_df, use_container_width=True)
             
-            if st.button("🚀 Publish All Articles"):
+            # Bulk publishing button
+            if st.button("🚀 Publish All Articles", type="primary"):
                 progress_bar = st.progress(0)
+                status_container = st.container()
+                
                 success_count = 0
+                failed_count = 0
                 
                 for i, file_name in enumerate(ready_articles):
                     article_data = st.session_state["uploaded_articles"][file_name]
                     metadata = st.session_state["article_metadata"][file_name]
                     
-                    st.info(f"Publishing: {metadata.get('seo_title', article_data['title'])[:50]}...")
+                    current_title = metadata.get('seo_title', article_data['title'])
                     
-                    # Prepare tags
-                    all_tags = metadata.get('tags', [])
-                    global_tags = st.session_state.get("global_tags", "")
-                    if global_tags:
-                        all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
+                    with status_container:
+                        if show_progress_details:
+                            st.info(f"📤 Publishing {i+1}/{len(ready_articles)}: {current_title[:50]}...")
                     
-                    # Get image if available
+                    # Prepare image buffer
                     image_buffer = None
-                    if file_name in st.session_state["images"]:
-                        image_buffer = st.session_state["images"][file_name]["buffer"]
+                    if not force_minimal and file_name in st.session_state["images"]:
+                        try:
+                            image_data = st.session_state["images"][file_name]
+                            image_data["buffer"].seek(0)
+                            image_buffer = image_data["buffer"]
+                        except:
+                            pass  # Continue without image
                     
+                    # Publish article
                     result = publish_to_wordpress_streamlined(
-                       metadata.get('seo_title', article_data['title']),  # title
-                       article_data['content'],                           # content
-                       metadata,                                          # ✅ pass full metadata
-                       image_buffer,                                      # image buffer
-                       wp_config,                                         # WP credentials
-                       publish_now                                        # draft or publish
+                        article_data['title'],
+                        article_data['content'],
+                        metadata if not force_minimal else None,
+                        image_buffer,
+                        wp_config,
+                        publish_now
                     )
-
                     
                     if result["success"]:
                         success_count += 1
-                        st.success(f"✅ Published: {metadata.get('seo_title', article_data['title'])[:30]}...")
+                        
+                        if show_progress_details:
+                            with status_container:
+                                st.success(f"✅ Published: {current_title[:40]}... - {result['url']}")
                         
                         # Log publication
                         st.session_state["publish_log"].append({
-                            "article": metadata.get('seo_title', article_data['title']),
+                            "article": result["title"],
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "status": "Published" if publish_now else "Draft",
-                            "has_image": "Yes" if file_name in st.session_state["images"] else "No"
+                            "has_image": "Yes" if result.get('has_image') else "No",
+                            "has_tags": "Yes" if result.get('has_tags') else "No",
+                            "has_metadata": "Yes"
                         })
-                    else:
-                        st.error(f"❌ Failed: {metadata.get('seo_title', article_data['title'])[:30]}...")
                     
+                    else:
+                        failed_count += 1
+                        
+                        if show_progress_details:
+                            with status_container:
+                                st.error(f"❌ Failed: {current_title[:40]}... - {result.get('error', 'Unknown error')}")
+                        
+                        # Stop if not skipping failed articles
+                        if not skip_failed:
+                            st.error(f"⏹️ Bulk publishing stopped due to failure. {success_count} articles published successfully.")
+                            break
+                    
+                    # Update progress
                     progress_bar.progress((i + 1) / len(ready_articles))
-                    time.sleep(2)  # Rate limiting
+                    
+                    # Rate limiting delay
+                    if i < len(ready_articles) - 1:  # Don't delay after the last article
+                        time.sleep(delay_seconds)
                 
-                st.markdown(f'<div class="success-box">🎉 Bulk publishing completed! {success_count}/{len(ready_articles)} articles published successfully.</div>', unsafe_allow_html=True)
+                # Final summary
+                with status_container:
+                    st.markdown(f"""
+                    <div style='background: linear-gradient(135deg, #d1ecf1 0%, #bee5eb 100%); 
+                               padding: 1.5rem; border-radius: 12px; border-left: 4px solid #17a2b8; margin: 1rem 0;'>
+                        <h3 style='color: #0c5460; margin: 0;'>🎉 Bulk Publishing Completed!</h3>
+                        <p style='margin: 0.5rem 0 0 0;'>
+                            ✅ <strong>{success_count}</strong> articles published successfully<br>
+                            ❌ <strong>{failed_count}</strong> articles failed<br>
+                            📊 <strong>{success_count}/{len(ready_articles)}</strong> success rate
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if failed_count > 0:
+                        st.warning(f"💡 **Tip:** You can retry failed articles individually or check the error details above.")
+        
         else:
             st.warning("⚠️ No articles ready for publishing. Complete Steps 1-2 first.")
     
@@ -1933,10 +2182,19 @@ with tab5:
         if not st.session_state["article_metadata"]:
             missing.append("article metadata")
         if not wp_config.get("base_url"):
-            missing.append("WordPress configuration")
+            missing.append("WordPress URL")
+        if not wp_config.get("username"):
+            missing.append("WordPress username")
+        if not wp_config.get("password"):
+            missing.append("WordPress password")
         
-        st.error(f"❌ Missing: {', '.join(missing)}")
-
+        st.error(f"❌ **Missing:** {', '.join(missing)}")
+        
+        if "WordPress" in ' '.join(missing):
+            st.info("💡 **Tip:** Configure WordPress in the sidebar or use the 'Custom WordPress Settings' option.")
+        
+        if "articles" in ' '.join(missing) or "metadata" in ' '.join(missing):
+            st.info("💡 **Tip:** Complete Steps 1-2 to upload articles and generate metadata first.")
 with tab6:
     st.header("📊 Step 6: Export & Analytics")
     
