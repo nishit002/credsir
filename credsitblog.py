@@ -89,30 +89,56 @@ def extract_keywords_from_content(content):
     return [word for word, freq in sorted_words[:5] if freq > 2]
 
 def get_wordpress_tags(wp_config):
-    """Fetch existing WordPress tags"""
+    """Fetch existing WordPress tags with enhanced error handling"""
     try:
         auth_str = f"{wp_config['username']}:{wp_config['password']}"
         auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
         headers = {"Authorization": f"Basic {auth_token}"}
         
         url = f"{wp_config['base_url']}/wp-json/wp/v2/tags?per_page=100"
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            tags_data = response.json()
-            return [{"id": tag["id"], "name": tag["name"], "slug": tag["slug"]} for tag in tags_data]
-        else:
-            st.warning(f"Failed to fetch tags: {response.status_code}")
+            try:
+                tags_data = response.json()
+                return [{"id": tag["id"], "name": tag["name"], "slug": tag["slug"]} for tag in tags_data]
+            except (json.JSONDecodeError, KeyError) as e:
+                st.warning(f"Error parsing tags response: {str(e)}")
+                return []
+        
+        elif response.status_code == 401:
+            st.error("❌ WordPress authentication failed. Please check your credentials.")
             return []
+        elif response.status_code == 403:
+            st.error("❌ WordPress access forbidden. Please check your user permissions.")
+            return []
+        elif response.status_code == 404:
+            st.warning("❌ WordPress REST API endpoint not found. Please ensure WordPress is properly configured.")
+            return []
+        else:
+            response_text = response.text[:200] + "..." if len(response.text) > 200 else response.text
+            st.warning(f"Failed to fetch tags: HTTP {response.status_code}")
+            st.warning(f"Response preview: {response_text}")
+            return []
+            
+    except requests.exceptions.Timeout:
+        st.warning("Timeout fetching WordPress tags. Please check your connection.")
+        return []
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Network error fetching tags: {str(e)}")
+        return []
     except Exception as e:
-        st.warning(f"Error fetching tags: {str(e)}")
+        st.warning(f"Unexpected error fetching tags: {str(e)}")
         return []
 
 def create_or_get_tags(tag_names, wp_config):
-    """Create new tags or get existing ones"""
+    """Create new tags or get existing ones with enhanced error handling"""
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {auth_token}"}
+    headers = {
+        "Authorization": f"Basic {auth_token}",
+        "Content-Type": "application/json"
+    }
     
     tag_ids = []
     
@@ -122,7 +148,7 @@ def create_or_get_tags(tag_names, wp_config):
             
         tag_name = tag_name.strip()
         
-        # First check if tag already exists
+        # First check if tag already exists in our cache
         existing_tag = None
         for tag in st.session_state.get("existing_tags", []):
             if tag["name"].lower() == tag_name.lower():
@@ -133,27 +159,112 @@ def create_or_get_tags(tag_names, wp_config):
             tag_ids.append(existing_tag["id"])
             continue
         
-        # Create new tag
+        # Try to find existing tag via API search
         try:
-            tag_data = {"name": tag_name}
-            response = requests.post(f"{wp_config['base_url']}/wp-json/wp/v2/tags", 
-                                   headers=headers, json=tag_data)
+            search_url = f"{wp_config['base_url']}/wp-json/wp/v2/tags"
+            search_params = {"search": tag_name, "per_page": 10}
+            search_response = requests.get(search_url, headers=headers, params=search_params, timeout=10)
             
-            if response.status_code == 201:
-                new_tag = response.json()
-                tag_ids.append(new_tag["id"])
-                
-                # Add to existing tags cache
-                st.session_state["existing_tags"].append({
-                    "id": new_tag["id"],
-                    "name": new_tag["name"],
-                    "slug": new_tag["slug"]
-                })
-            else:
-                st.warning(f"Failed to create tag '{tag_name}': {response.text}")
+            if search_response.status_code == 200:
+                try:
+                    search_results = search_response.json()
+                    # Look for exact match
+                    for result in search_results:
+                        if result["name"].lower() == tag_name.lower():
+                            tag_ids.append(result["id"])
+                            # Add to cache
+                            st.session_state["existing_tags"].append({
+                                "id": result["id"],
+                                "name": result["name"],
+                                "slug": result["slug"]
+                            })
+                            existing_tag = result
+                            break
+                    
+                    if existing_tag:
+                        continue
+                        
+                except (json.JSONDecodeError, KeyError) as e:
+                    st.warning(f"Error parsing search results for tag '{tag_name}': {str(e)}")
+            
+            elif search_response.status_code == 401:
+                st.error("❌ WordPress authentication failed. Please check your credentials.")
+                continue
+            elif search_response.status_code == 403:
+                st.error("❌ WordPress access forbidden. Please check your user permissions.")
+                continue
+            elif search_response.status_code == 404:
+                st.warning("❌ WordPress REST API not found. Please ensure WordPress is properly configured.")
+                continue
         
+        except requests.exceptions.Timeout:
+            st.warning(f"Timeout searching for tag '{tag_name}'. Attempting to create new tag.")
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Network error searching for tag '{tag_name}': {str(e)}")
+        
+        # Create new tag if not found
+        try:
+            create_url = f"{wp_config['base_url']}/wp-json/wp/v2/tags"
+            tag_data = {"name": tag_name}
+            
+            create_response = requests.post(create_url, headers=headers, json=tag_data, timeout=10)
+            
+            if create_response.status_code == 201:
+                try:
+                    new_tag = create_response.json()
+                    tag_ids.append(new_tag["id"])
+                    
+                    # Add to existing tags cache
+                    st.session_state["existing_tags"].append({
+                        "id": new_tag["id"],
+                        "name": new_tag["name"],
+                        "slug": new_tag["slug"]
+                    })
+                    
+                    st.success(f"✅ Created new tag: '{tag_name}'")
+                    
+                except (json.JSONDecodeError, KeyError) as e:
+                    st.warning(f"Error parsing created tag response for '{tag_name}': {str(e)}")
+            
+            elif create_response.status_code == 400:
+                # Tag might already exist or invalid data
+                try:
+                    error_data = create_response.json()
+                    if "term_exists" in str(error_data).lower():
+                        st.info(f"Tag '{tag_name}' already exists, searching again...")
+                        # Try search one more time
+                        search_response = requests.get(search_url, headers=headers, params=search_params, timeout=10)
+                        if search_response.status_code == 200:
+                            search_results = search_response.json()
+                            for result in search_results:
+                                if result["name"].lower() == tag_name.lower():
+                                    tag_ids.append(result["id"])
+                                    break
+                    else:
+                        st.warning(f"Invalid tag data for '{tag_name}': {error_data}")
+                except:
+                    st.warning(f"Failed to create tag '{tag_name}': Bad request (400)")
+            
+            elif create_response.status_code == 401:
+                st.error("❌ WordPress authentication failed during tag creation.")
+                break  # Stop trying to create more tags
+            
+            elif create_response.status_code == 403:
+                st.error("❌ Insufficient permissions to create tags in WordPress.")
+                break  # Stop trying to create more tags
+            
+            else:
+                # Log the actual response for debugging
+                response_text = create_response.text[:200] + "..." if len(create_response.text) > 200 else create_response.text
+                st.warning(f"Failed to create tag '{tag_name}': HTTP {create_response.status_code}")
+                st.warning(f"Response preview: {response_text}")
+        
+        except requests.exceptions.Timeout:
+            st.warning(f"Timeout creating tag '{tag_name}'. Skipping.")
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Network error creating tag '{tag_name}': {str(e)}")
         except Exception as e:
-            st.warning(f"Error creating tag '{tag_name}': {str(e)}")
+            st.warning(f"Unexpected error creating tag '{tag_name}': {str(e)}")
     
     return tag_ids
 
@@ -821,16 +932,39 @@ if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("pa
             auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
             headers = {"Authorization": f"Basic {auth_token}"}
             
-            response = requests.get(f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=1", headers=headers)
+            # Test basic API access
+            test_url = f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=1"
+            response = requests.get(test_url, headers=headers, timeout=10)
+            
             if response.status_code == 200:
                 st.sidebar.success("✅ WordPress connection successful!")
                 
                 # Fetch existing tags
-                existing_tags = get_wordpress_tags(wp_config)
-                st.session_state["existing_tags"] = existing_tags
-                st.sidebar.info(f"📋 Fetched {len(existing_tags)} existing tags")
+                with st.sidebar:
+                    with st.spinner("Fetching existing tags..."):
+                        existing_tags = get_wordpress_tags(wp_config)
+                        st.session_state["existing_tags"] = existing_tags
+                        
+                        if existing_tags:
+                            st.sidebar.info(f"📋 Fetched {len(existing_tags)} existing tags")
+                        else:
+                            st.sidebar.info("📋 No existing tags found or unable to fetch tags")
+            
+            elif response.status_code == 401:
+                st.sidebar.error("❌ Authentication failed: Invalid username or password")
+            elif response.status_code == 403:
+                st.sidebar.error("❌ Access forbidden: Check user permissions")
+            elif response.status_code == 404:
+                st.sidebar.error("❌ WordPress REST API not found. Check URL and ensure REST API is enabled")
             else:
-                st.sidebar.error(f"❌ Connection failed: {response.status_code}")
+                response_text = response.text[:100] + "..." if len(response.text) > 100 else response.text
+                st.sidebar.error(f"❌ Connection failed: HTTP {response.status_code}")
+                st.sidebar.error(f"Response: {response_text}")
+        
+        except requests.exceptions.Timeout:
+            st.sidebar.error("❌ Connection timeout. Please check your WordPress URL.")
+        except requests.exceptions.RequestException as e:
+            st.sidebar.error(f"❌ Network error: {str(e)}")
         except Exception as e:
             st.sidebar.error(f"❌ Connection error: {str(e)}")
 else:
