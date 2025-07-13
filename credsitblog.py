@@ -93,9 +93,13 @@ def get_wordpress_tags(wp_config):
     try:
         auth_str = f"{wp_config['username']}:{wp_config['password']}"
         auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-        headers = {"Authorization": f"Basic {auth_token}"}
+        headers = {
+            "Authorization": f"Basic {auth_token}",
+            "Content-Type": "application/json"
+        }
         
-        url = f"{wp_config['base_url']}/wp-json/wp/v2/tags?per_page=100"
+        wp_base = wp_config['base_url'].rstrip('/')
+        url = f"{wp_base}/wp-json/wp/v2/tags?per_page=100"
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
@@ -117,6 +121,7 @@ def create_or_get_tags(tag_names, wp_config):
         "Content-Type": "application/json"
     }
     
+    wp_base = wp_config['base_url'].rstrip('/')
     tag_ids = []
     
     for tag_name in tag_names:
@@ -127,7 +132,7 @@ def create_or_get_tags(tag_names, wp_config):
         
         try:
             # Check if tag already exists
-            search_url = f"{wp_config['base_url']}/wp-json/wp/v2/tags"
+            search_url = f"{wp_base}/wp-json/wp/v2/tags"
             search_params = {"search": tag_name}
             search_response = requests.get(search_url, headers=headers, params=search_params, timeout=10)
             
@@ -140,7 +145,7 @@ def create_or_get_tags(tag_names, wp_config):
                         break
                 else:
                     # Create new tag
-                    create_url = f"{wp_config['base_url']}/wp-json/wp/v2/tags"
+                    create_url = f"{wp_base}/wp-json/wp/v2/tags"
                     tag_data = {"name": tag_name}
                     
                     create_response = requests.post(create_url, headers=headers, json=tag_data, timeout=10)
@@ -527,10 +532,14 @@ def get_wordpress_posts(wp_config, per_page=100):
     try:
         auth_str = f"{wp_config['username']}:{wp_config['password']}"
         auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-        headers = {"Authorization": f"Basic {auth_token}"}
+        headers = {
+            "Authorization": f"Basic {auth_token}",
+            "Content-Type": "application/json"
+        }
         
-        url = f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page={per_page}&status=publish"
-        response = requests.get(url, headers=headers)
+        wp_base = wp_config['base_url'].rstrip('/')
+        url = f"{wp_base}/wp-json/wp/v2/posts?per_page={per_page}&status=publish"
+        response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code == 200:
             posts = response.json()
@@ -679,10 +688,12 @@ def prepare_article_html(content, metadata):
     return html_content
 
 def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publish_now=True):
-    """Publish article to WordPress - simplified and robust version"""
-    wp_base = wp_config["base_url"].rstrip('/')  # Remove trailing slash
+    """Publish article to WordPress - fixed version"""
+    wp_base = wp_config["base_url"].rstrip('/')
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+    
+    # Standard headers for all requests
     headers = {
         "Authorization": f"Basic {auth_token}",
         "Content-Type": "application/json"
@@ -701,13 +712,16 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         try:
             image_buffer.seek(0)
             img_data = image_buffer.read()
-            img_headers = headers.copy()
-            img_headers.update({
+            
+            # Specific headers for image upload
+            img_headers = {
+                "Authorization": f"Basic {auth_token}",
                 "Content-Disposition": f"attachment; filename={final_title.replace(' ', '_')}.jpg",
                 "Content-Type": "image/jpeg"
-            })
+            }
+            
             media_url = f"{wp_base}/wp-json/wp/v2/media"
-            img_resp = requests.post(media_url, headers=img_headers, data=img_data, timeout=15)
+            img_resp = requests.post(media_url, headers=img_headers, data=img_data, timeout=20)
             
             if img_resp.status_code == 201:
                 img_id = img_resp.json()["id"]
@@ -722,7 +736,7 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         except Exception as e:
             pass  # Continue without tags
     
-    # Publish article
+    # Prepare post data
     post_data = {
         "title": final_title,
         "content": html_content,
@@ -741,7 +755,7 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
     try:
         # Test REST API endpoint first
         test_url = f"{wp_base}/wp-json/wp/v2"
-        test_resp = requests.get(test_url, headers=headers, timeout=10)
+        test_resp = requests.get(test_url, headers=headers, timeout=15)
         
         if test_resp.status_code != 200:
             return {"success": False, "error": f"REST API not accessible: HTTP {test_resp.status_code}"}
@@ -754,7 +768,7 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         
         # Now try to publish
         post_url = f"{wp_base}/wp-json/wp/v2/posts"
-        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=20)
+        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=25)
         
         # Check for HTML response (indicates redirect or error page)
         if post_resp.headers.get('content-type', '').startswith('text/html'):
@@ -764,7 +778,7 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
             try:
                 response_data = post_resp.json()
                 article_url = response_data["link"]
-                return {"success": True, "url": article_url}
+                return {"success": True, "url": article_url, "title": final_title}
             except:
                 return {"success": False, "error": "Published successfully but couldn't parse response"}
         else:
@@ -778,25 +792,6 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         return {"success": False, "error": "Request timeout - WordPress server might be slow"}
     except requests.exceptions.ConnectionError:
         return {"success": False, "error": "Connection error - check WordPress URL"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-    
-    if tag_ids:
-        post_data["tags"] = tag_ids
-    
-    if img_id:
-        post_data["featured_media"] = img_id
-    
-    if metadata and metadata.get('meta_description'):
-        post_data["excerpt"] = metadata['meta_description']
-    
-    try:
-        post_resp = requests.post(f"{wp_base}/wp-json/wp/v2/posts", headers=headers, json=post_data, timeout=20)
-        if post_resp.status_code == 201:
-            post_url = post_resp.json()["link"]
-            return {"success": True, "url": post_url}
-        else:
-            return {"success": False, "error": post_resp.text}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -902,11 +897,14 @@ if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("pa
                 wp_base = wp_config["base_url"].rstrip('/')
                 auth_str = f"{wp_config['username']}:{wp_config['password']}"
                 auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-                headers = {"Authorization": f"Basic {auth_token}"}
+                headers = {
+                    "Authorization": f"Basic {auth_token}",
+                    "Content-Type": "application/json"
+                }
                 
                 # Test REST API root
                 test_url = f"{wp_base}/wp-json/wp/v2"
-                response = requests.get(test_url, headers=headers, timeout=10)
+                response = requests.get(test_url, headers=headers, timeout=15)
                 
                 if response.status_code == 200:
                     # Check if response is JSON
@@ -953,18 +951,21 @@ else:
     st.sidebar.warning("⚠️ Hugging Face not configured")
 
 def test_wordpress_connection_detailed(wp_config):
-    """Detailed WordPress connection testing"""
+    """Detailed WordPress connection testing with improved error handling"""
     wp_base = wp_config["base_url"].rstrip('/')
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {auth_token}"}
+    headers = {
+        "Authorization": f"Basic {auth_token}",
+        "Content-Type": "application/json"
+    }
     
     st.write("**Testing WordPress Connection...**")
     
     # Test 1: Basic connectivity
     st.write("🔍 **Test 1: Basic Website Access**")
     try:
-        response = requests.get(wp_base, timeout=10)
+        response = requests.get(wp_base, timeout=15)
         if response.status_code == 200:
             st.success(f"✅ Website accessible (HTTP {response.status_code})")
         else:
@@ -978,7 +979,7 @@ def test_wordpress_connection_detailed(wp_config):
     st.write("🔍 **Test 2: REST API Discovery**")
     try:
         # Check if REST API endpoint is discoverable
-        response = requests.get(f"{wp_base}/wp-json/", timeout=10)
+        response = requests.get(f"{wp_base}/wp-json/", timeout=15)
         if response.status_code == 200:
             try:
                 api_data = response.json()
@@ -997,7 +998,7 @@ def test_wordpress_connection_detailed(wp_config):
     # Test 3: Authentication
     st.write("🔍 **Test 3: Authentication Test**")
     try:
-        response = requests.get(f"{wp_base}/wp-json/wp/v2/users/me", headers=headers, timeout=10)
+        response = requests.get(f"{wp_base}/wp-json/wp/v2/users/me", headers=headers, timeout=15)
         if response.status_code == 200:
             try:
                 user_data = response.json()
@@ -1013,6 +1014,15 @@ def test_wordpress_connection_detailed(wp_config):
         elif response.status_code == 403:
             st.error("❌ Authentication forbidden - check user permissions")
             return False
+        elif response.status_code == 500:
+            st.error("❌ Server error (HTTP 500) - This usually indicates:")
+            st.markdown("""
+            - Wrong application password format
+            - Plugin conflicts (try disabling security plugins temporarily)
+            - Server-side authentication issues
+            - WordPress configuration problems
+            """)
+            return False
         else:
             st.error(f"❌ Authentication error (HTTP {response.status_code})")
             return False
@@ -1023,7 +1033,7 @@ def test_wordpress_connection_detailed(wp_config):
     # Test 4: Posts endpoint access
     st.write("🔍 **Test 4: Posts Endpoint Access**")
     try:
-        response = requests.get(f"{wp_base}/wp-json/wp/v2/posts?per_page=1", headers=headers, timeout=10)
+        response = requests.get(f"{wp_base}/wp-json/wp/v2/posts?per_page=1", headers=headers, timeout=15)
         if response.status_code == 200:
             try:
                 posts_data = response.json()
@@ -1049,8 +1059,8 @@ def test_wordpress_connection_detailed(wp_config):
         }
         
         response = requests.post(f"{wp_base}/wp-json/wp/v2/posts", 
-                               headers={**headers, "Content-Type": "application/json"}, 
-                               json=test_post_data, timeout=10)
+                               headers=headers, 
+                               json=test_post_data, timeout=20)
         
         if response.status_code == 201:
             try:
@@ -1060,7 +1070,7 @@ def test_wordpress_connection_detailed(wp_config):
                 
                 # Try to delete the test post
                 delete_response = requests.delete(f"{wp_base}/wp-json/wp/v2/posts/{post_data.get('id')}", 
-                                               headers=headers, timeout=10)
+                                               headers=headers, timeout=15)
                 if delete_response.status_code == 200:
                     st.success("✅ Test post deleted successfully")
                 else:
@@ -1074,6 +1084,16 @@ def test_wordpress_connection_detailed(wp_config):
             return False
         elif response.status_code == 403:
             st.error("❌ No permission to create posts - user role issue")
+            return False
+        elif response.status_code == 500:
+            st.error("❌ Server error (HTTP 500) during post creation")
+            st.markdown("""
+            **Common causes:**
+            - Application password format is incorrect
+            - Security plugins blocking REST API
+            - Server configuration issues
+            - Plugin conflicts
+            """)
             return False
         else:
             st.error(f"❌ Post creation failed (HTTP {response.status_code})")
@@ -1099,27 +1119,28 @@ if st.session_state.get("run_detailed_test"):
         else:
             st.error("❌ Some tests failed. Please check the errors above and your WordPress configuration.")
             
-            # Common solutions
-            st.subheader("💡 Common Solutions")
+            # Common solutions for 500 errors
+            st.subheader("💡 Solutions for HTTP 500 Errors")
             st.markdown("""
-            **If REST API is not accessible:**
-            - Check if WordPress REST API is enabled (usually enabled by default)
-            - Verify your WordPress URL is correct (should be like `https://yoursite.com`)
-            - Check if there are security plugins blocking the REST API
+            **Application Password Issues:**
+            - Go to WordPress Admin → Users → Your Profile
+            - Scroll down to "Application Passwords"
+            - Create a new application password
+            - Copy the EXACT password with spaces (like: `abcd efgh ijkl mnop`)
             
-            **If authentication fails:**
-            - Verify username is correct (case-sensitive)
-            - Make sure you're using an Application Password, not your regular login password
-            - Generate a new Application Password in WordPress Admin → Users → Your Profile
+            **Security Plugin Issues:**
+            - Temporarily disable security plugins (WordFence, Sucuri, etc.)
+            - Check if REST API is blocked in security settings
+            - Look for "REST API" or "JSON API" settings in your security plugin
             
-            **If permission errors occur:**
-            - Ensure your user has 'Editor' or 'Administrator' role
-            - Check if your user has 'publish_posts' capability
+            **Server Configuration:**
+            - Contact your hosting provider about REST API support
+            - Check if mod_rewrite is enabled
+            - Verify permalinks are working (Settings → Permalinks → Save)
             
-            **If getting HTML instead of JSON:**
-            - Your site might have a security plugin interfering
-            - Try temporarily disabling security plugins
-            - Check if there's a maintenance mode active
+            **Plugin Conflicts:**
+            - Try deactivating plugins one by one to identify conflicts
+            - Some caching or security plugins can interfere with authentication
             """)
     else:
         st.error("❌ WordPress configuration incomplete")
@@ -1738,7 +1759,7 @@ with tab5:
                         
                         # Log the publication
                         st.session_state["publish_log"].append({
-                            "article": final_metadata.get('seo_title', article_data['title']),
+                            "article": result.get('title', final_metadata.get('seo_title', article_data['title'])),
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "status": "Published" if publish_now else "Draft"
