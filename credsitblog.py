@@ -1184,7 +1184,14 @@ with tab3:
                         "filename": uploaded_image.name
                     }
                     st.success("✅ Image uploaded successfully!")
-                    st.image(image_buffer, caption=f"Uploaded: {uploaded_image.name}")
+                    try:
+                        image_buffer.seek(0)
+                        st.image(image_buffer, caption=f"Uploaded: {uploaded_image.name}")
+                    except Exception as e:
+                        st.error(f"Error displaying uploaded image: {str(e)}")
+                        # Remove corrupted upload
+                        if selected_file in st.session_state["images"]:
+                            del st.session_state["images"][selected_file]
             
             # Text overlay options (if image exists)
             if selected_file in st.session_state["images"]:
@@ -1263,7 +1270,11 @@ with tab3:
                                 }
                                 
                                 st.success("✅ Text overlay applied!")
-                                st.image(overlay_buffer, caption=f"With Overlay: {article_data['title']}")
+                                try:
+                                    overlay_buffer.seek(0)
+                                    st.image(overlay_buffer, caption=f"With Overlay: {article_data['title']}")
+                                except Exception as e:
+                                    st.error(f"Error displaying overlay image: {str(e)}")
                                 
                             except Exception as e:
                                 st.error(f"❌ Error applying overlay: {str(e)}")
@@ -1273,7 +1284,17 @@ with tab3:
                 st.subheader("🖼️ Current Image")
                 
                 image_data = st.session_state["images"][selected_file]
-                st.image(image_data["buffer"], caption=f"Current image for: {article_data['title']}")
+                
+                # Reset buffer position before displaying
+                try:
+                    image_data["buffer"].seek(0)
+                    st.image(image_data["buffer"], caption=f"Current image for: {article_data['title']}")
+                except Exception as e:
+                    st.error(f"Error displaying image: {str(e)}")
+                    # Remove corrupted image data
+                    del st.session_state["images"][selected_file]
+                    st.warning("Corrupted image data removed. Please regenerate the image.")
+                    st.rerun()
                 
                 # Image management buttons
                 col1, col2, col3 = st.columns(3)
@@ -1286,13 +1307,16 @@ with tab3:
                 
                 with col2:
                     # Download button
-                    image_data["buffer"].seek(0)
-                    st.download_button(
-                        "⬇️ Download Image",
-                        image_data["buffer"],
-                        file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
-                        mime="image/png"
-                    )
+                    try:
+                        image_data["buffer"].seek(0)
+                        st.download_button(
+                            "⬇️ Download Image",
+                            image_data["buffer"].getvalue(),
+                            file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
+                            mime="image/png"
+                        )
+                    except Exception as e:
+                        st.error(f"Error preparing download: {str(e)}")
                 
                 with col3:
                     # Show image info
@@ -1381,7 +1405,12 @@ with tab3:
             for i, (file_name, image_data) in enumerate(st.session_state["images"].items()):
                 with cols[i % 3]:
                     article_title = st.session_state["uploaded_articles"][file_name]['title']
-                    st.image(image_data["buffer"], caption=f"{article_title[:25]}...")
+                    try:
+                        image_data["buffer"].seek(0)
+                        st.image(image_data["buffer"], caption=f"{article_title[:25]}...")
+                    except Exception as e:
+                        st.error(f"Error displaying image: {str(e)}")
+                        continue
                     
                     # Small management buttons for each image
                     col_a, col_b = st.columns(2)
@@ -1592,7 +1621,13 @@ with tab5:
                 with st.spinner("Publishing to WordPress..."):
                     image_buffer = None
                     if selected_file in st.session_state["images"]:
-                        image_buffer = st.session_state["images"][selected_file]["buffer"]
+                        try:
+                            image_data = st.session_state["images"][selected_file]
+                            image_data["buffer"].seek(0)
+                            image_buffer = image_data["buffer"]
+                        except Exception as e:
+                            st.warning(f"Error preparing image: {str(e)}")
+                            image_buffer = None
                     
                     result = publish_to_wordpress(
                         metadata.get('seo_title', article_data['title']),
@@ -1763,14 +1798,17 @@ with tab6:
             with col3:
                 # Image export (if available)
                 if selected_file in st.session_state["images"]:
-                    image_data = st.session_state["images"][selected_file]
-                    image_data["buffer"].seek(0)
-                    st.download_button(
-                        "⬇️ Download Image",
-                        image_data["buffer"],
-                        file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
-                        mime="image/png"
-                    )
+                    try:
+                        image_data = st.session_state["images"][selected_file]
+                        image_data["buffer"].seek(0)
+                        st.download_button(
+                            "⬇️ Download Image",
+                            image_data["buffer"].getvalue(),
+                            file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
+                            mime="image/png"
+                        )
+                    except Exception as e:
+                        st.button("⬇️ Image Error", disabled=True, help=f"Error: {str(e)}")
                 else:
                     st.button("⬇️ No Image", disabled=True)
         
@@ -1819,11 +1857,15 @@ with tab6:
                 
                 # Add images
                 for file_name, image_data in st.session_state["images"].items():
-                    article_title = st.session_state["uploaded_articles"][file_name]['title']
-                    safe_title = article_title[:30].replace(' ', '_').replace('/', '_').replace('\\', '_')
-                    
-                    image_data["buffer"].seek(0)
-                    zip_file.writestr(f"images/{safe_title}.png", image_data["buffer"].read())
+                    try:
+                        article_title = st.session_state["uploaded_articles"][file_name]['title']
+                        safe_title = article_title[:30].replace(' ', '_').replace('/', '_').replace('\\', '_')
+                        
+                        image_data["buffer"].seek(0)
+                        zip_file.writestr(f"images/{safe_title}.png", image_data["buffer"].read())
+                    except Exception as e:
+                        st.warning(f"Skipped corrupted image for {file_name}: {str(e)}")
+                        continue
             
             zip_buffer.seek(0)
             
