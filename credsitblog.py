@@ -1869,6 +1869,7 @@ with tab5:
                     
                     # Prepare tags
                     all_tags = metadata.get('tags', [])
+                    global_tags = st.session_state.get("global_tags", "")
                     if global_tags:
                         all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
                     
