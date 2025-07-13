@@ -1879,7 +1879,7 @@ with tab5:
                         image_buffer = st.session_state["images"][file_name]["buffer"]
                     
                     # Publish
-                    result = publish_to_wordpress(
+                    result = publish_to_wordpress_streamlined(
                         metadata.get('seo_title', article_data['title']),
                         article_data['content'],
                         image_buffer,
