@@ -918,14 +918,10 @@ def publish_to_wordpress_streamlined(title, content, metadata, image_buffer, wp_
             }
     
     except Exception as e:
-        return {
-            "success": False, 
-            "error": f"Publishing error: {str(e)}",
-            "title": final_title
-        post_data = {
-        "title": title,
-        "content": content,
-        "status": "publish" if publish_now else "draft"
+           return {
+        "success": False,
+        "error": f"Publishing error: {str(e)}",
+        "title": final_title
     }
     
     # Only add tags if we have them and not skipping
