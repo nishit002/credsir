@@ -814,51 +814,115 @@ def apply_internal_links_to_content(content, links_data):
     
     return modified_content
 
-def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_now=True, skip_tags=False):
-    """Publish article to WordPress with optional tag handling"""
+def prepare_article_html(content, metadata):
+    """Convert article content to proper HTML with metadata"""
+    
+    # Clean and structure the content
+    html_content = content
+    
+    # Ensure basic HTML structure
+    if not html_content.strip().startswith('<'):
+        # Convert plain text to HTML
+        html_content = f"<div>{html_content}</div>"
+    
+    # Add meta description as hidden comment for SEO
+    if metadata.get('meta_description'):
+        meta_comment = f"<!-- Meta Description: {metadata['meta_description']} -->\n"
+        html_content = meta_comment + html_content
+    
+    # Add primary keyword as hidden comment
+    if metadata.get('primary_keyword'):
+        keyword_comment = f"<!-- Primary Keyword: {metadata['primary_keyword']} -->\n"
+        html_content = keyword_comment + html_content
+    
+    # Ensure proper paragraph structure
+    if '<p>' not in html_content and '<div>' not in html_content:
+        # Wrap content in paragraphs
+        paragraphs = html_content.split('\n\n')
+        html_content = ''.join([f"<p>{p.strip()}</p>\n" for p in paragraphs if p.strip()])
+    
+    return html_content
+
+def publish_to_wordpress_streamlined(title, content, metadata, image_buffer, wp_config, publish_now=True):
+    """Streamlined WordPress publishing - never halts, always publishes"""
+    
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {auth_token}"}
+    headers = {
+        "Authorization": f"Basic {auth_token}",
+        "Content-Type": "application/json"
+    }
     
+    # Prepare HTML content with metadata
+    html_content = prepare_article_html(content, metadata)
+    
+    # Use SEO title if available, otherwise use original title
+    final_title = metadata.get('seo_title', title)
+    
+    # Try to upload image (but don't halt if it fails)
     img_id = None
-    
-    # Upload image if provided
     if image_buffer:
         try:
             image_buffer.seek(0)
             img_data = image_buffer.read()
             img_headers = headers.copy()
             img_headers.update({
-                "Content-Disposition": f"attachment; filename={title.replace(' ', '_')}.jpg",
+                "Content-Disposition": f"attachment; filename={final_title.replace(' ', '_')}.jpg",
                 "Content-Type": "image/jpeg"
             })
             media_url = f"{wp_config['base_url']}/wp-json/wp/v2/media"
-            img_resp = requests.post(media_url, headers=img_headers, data=img_data)
+            img_resp = requests.post(media_url, headers=img_headers, data=img_data, timeout=15)
             
             if img_resp.status_code == 201:
                 img_id = img_resp.json()["id"]
-                st.info(f"✅ Image uploaded successfully for: {title[:30]}...")
-            else:
-                st.warning(f"⚠️ Image upload failed for: {title[:30]}... (will publish without image)")
-        except Exception as e:
-            st.warning(f"⚠️ Image upload error for {title[:30]}...: {str(e)}")
+            # If image upload fails, just continue without it
+        except:
+            # Silently continue if image upload fails
+            pass
     
-    # Handle tags only if not skipping
-    tag_ids = []
-    if not skip_tags and tags:
-        try:
-            st.info(f"Processing tags for: {title[:30]}...")
-            tag_ids = create_or_get_tags(tags, wp_config)
-            if tag_ids:
-                st.success(f"✅ Processed {len(tag_ids)} tags for: {title[:30]}...")
-            else:
-                st.warning(f"⚠️ No tags created for: {title[:30]}... (will publish without tags)")
-        except Exception as e:
-            st.warning(f"⚠️ Tag processing failed for {title[:30]}...: {str(e)} (will publish without tags)")
-            tag_ids = []
-    
-    # Publish article
+    # Create post data - minimal and robust
     post_data = {
+        "title": final_title,
+        "content": html_content,
+        "status": "publish" if publish_now else "draft"
+    }
+    
+    # Add image only if upload succeeded
+    if img_id:
+        post_data["featured_media"] = img_id
+    
+    # Add excerpt from meta description if available
+    if metadata.get('meta_description'):
+        post_data["excerpt"] = metadata['meta_description']
+    
+    # Publish the article
+    try:
+        post_url = f"{wp_config['base_url']}/wp-json/wp/v2/posts"
+        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=20)
+        
+        if post_resp.status_code == 201:
+            post_data_response = post_resp.json()
+            article_url = post_data_response["link"]
+            
+            return {
+                "success": True, 
+                "url": article_url,
+                "has_image": bool(img_id),
+                "title": final_title
+            }
+        else:
+            return {
+                "success": False, 
+                "error": f"Publishing failed: HTTP {post_resp.status_code}",
+                "title": final_title
+            }
+    
+    except Exception as e:
+        return {
+            "success": False, 
+            "error": f"Publishing error: {str(e)}",
+            "title": final_title
+        }_data = {
         "title": title,
         "content": content,
         "status": "publish" if publish_now else "draft"
@@ -1715,47 +1779,11 @@ with tab5:
         wp_config.get("username") and 
         wp_config.get("password")):
         
-        st.subheader("📤 Publishing Configuration")
+        st.subheader("📤 Streamlined Publishing")
+        st.info("🚀 **Simple & Fast**: Articles will be published as HTML with metadata. Tags and images are optional - the system won't halt if they fail.")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            publish_mode = st.radio("Publishing Mode", ["Draft", "Publish Immediately"])
-            publish_now = publish_mode == "Publish Immediately"
-        
-        with col2:
-            skip_tags = st.checkbox("Skip Tags & Categories", 
-                                   value=False, 
-                                   help="Publish without tags/categories (you can add them later in WordPress)")
-        
-        if not skip_tags:
-            global_tags = st.text_input("Additional Tags (comma-separated)", "education,india,guide")
-        else:
-            global_tags = ""
-            st.info("ℹ️ Articles will be published without tags. You can add them later in WordPress admin.")
-        
-        # Tag management section (only show if not skipping tags)
-        if not skip_tags:
-            st.markdown('<div class="tag-box">', unsafe_allow_html=True)
-            st.subheader("🏷️ Enhanced Tag Management")
-            
-            # Show existing WordPress tags
-            if st.session_state.get("existing_tags"):
-                st.write(f"**Available WordPress Tags ({len(st.session_state['existing_tags'])}):**")
-                tag_names = [tag["name"] for tag in st.session_state["existing_tags"]]
-                st.write(", ".join(tag_names[:15]) + ("..." if len(tag_names) > 15 else ""))
-            
-            if st.button("🔄 Refresh WordPress Tags"):
-                existing_tags = get_wordpress_tags(wp_config)
-                st.session_state["existing_tags"] = existing_tags
-                if existing_tags:
-                    st.success(f"✅ Refreshed {len(existing_tags)} tags from WordPress")
-                else:
-                    st.warning("⚠️ Could not fetch tags from WordPress. Consider using 'Skip Tags' option.")
-                st.rerun()
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("🏷️ Tag management is disabled. Articles will be published without tags.")
+        publish_mode = st.radio("Publishing Mode", ["Draft", "Publish Immediately"])
+        publish_now = publish_mode == "Publish Immediately"
         
         # Single article publishing
         st.subheader("📝 Publish Single Article")
@@ -1770,54 +1798,50 @@ with tab5:
             # Preview publishing details
             col1, col2 = st.columns(2)
             with col1:
-                st.write(f"**Title:** {metadata.get('seo_title', article_data['title'])}")
-                st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', '')}")
+                st.write(f"**Original Title:** {article_data['title'][:50]}...")
+                st.write(f"**SEO Title:** {metadata.get('seo_title', 'Using original title')[:50]}...")
                 st.write(f"**Has Image:** {'✅' if selected_file in st.session_state['images'] else '❌'}")
             
             with col2:
-                all_tags = []
-                if not skip_tags:
-                    all_tags = metadata.get('tags', [])
-                    if global_tags:
-                        all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
-                
-                st.write(f"**Tags:** {', '.join(all_tags) if all_tags else 'None (will be added later)'}")
+                st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'None')}")
+                st.write(f"**Category:** {metadata.get('category', 'None')}")
                 st.write(f"**Status:** {publish_mode}")
             
             if st.button("📤 Publish Selected Article"):
                 with st.spinner("Publishing to WordPress..."):
+                    # Get image buffer if available
                     image_buffer = None
                     if selected_file in st.session_state["images"]:
                         try:
                             image_data = st.session_state["images"][selected_file]
                             image_data["buffer"].seek(0)
                             image_buffer = image_data["buffer"]
-                        except Exception as e:
-                            st.warning(f"Error preparing image: {str(e)}")
-                            image_buffer = None
+                        except:
+                            pass  # Continue without image if there's an error
                     
-                    result = publish_to_wordpress(
-                        metadata.get('seo_title', article_data['title']),
+                    # Publish using streamlined function
+                    result = publish_to_wordpress_streamlined(
+                        article_data['title'],
                         article_data['content'],
+                        metadata,
                         image_buffer,
-                        all_tags,
                         wp_config,
-                        publish_now,
-                        skip_tags
+                        publish_now
                     )
                     
                     if result["success"]:
                         st.markdown('<div class="success-box">✅ Published successfully!</div>', unsafe_allow_html=True)
                         st.success(f"🔗 **URL:** {result['url']}")
+                        st.info(f"📸 **Image:** {'✅ Uploaded' if result.get('has_image') else '❌ Not uploaded'}")
                         
                         # Log the publication
                         st.session_state["publish_log"].append({
-                            "article": metadata.get('seo_title', article_data['title']),
+                            "article": result["title"],
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "status": "Published" if publish_now else "Draft",
-                            "has_image": "Yes" if selected_file in st.session_state["images"] else "No",
-                            "has_tags": "Yes" if (all_tags and not skip_tags) else "No"
+                            "has_image": "Yes" if result.get('has_image') else "No",
+                            "has_metadata": "Yes"
                         })
                     else:
                         st.error(f"❌ Publishing failed: {result['error']}")
@@ -1911,7 +1935,7 @@ with tab6:
         st.dataframe(log_df, use_container_width=True)
         
         # Enhanced Analytics
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Published", len(log_df))
         with col2:
@@ -1923,9 +1947,6 @@ with tab6:
         with col4:
             with_images = len(log_df[log_df.get("has_image", "No") == "Yes"])
             st.metric("With Images", with_images)
-        with col5:
-            with_tags = len(log_df[log_df.get("has_tags", "No") == "Yes"])
-            st.metric("With Tags", with_tags)
         
         # Export log
         log_csv = log_df.to_csv(index=False)
