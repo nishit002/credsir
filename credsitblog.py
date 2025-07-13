@@ -1878,15 +1878,16 @@ with tab5:
                     if file_name in st.session_state["images"]:
                         image_buffer = st.session_state["images"][file_name]["buffer"]
                     
-                    # Publish
                     result = publish_to_wordpress_streamlined(
-                        metadata.get('seo_title', article_data['title']),
-                        article_data['content'],
-                        image_buffer,
-                        all_tags,
-                        wp_config,
-                        publish_now
+                       metadata.get('seo_title', article_data['title']),  # title
+                       article_data['content'],                           # content
+                       metadata,                                          # ✅ pass full metadata
+                       image_buffer,                                      # image buffer
+                       all_tags,                                          # tags
+                       wp_config,                                         # WP credentials
+                       publish_now                                        # draft or publish
                     )
+
                     
                     if result["success"]:
                         success_count += 1
