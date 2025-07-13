@@ -688,74 +688,79 @@ def prepare_article_html(content, metadata):
     return html_content
 
 def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publish_now=True):
-    """Publish article to WordPress - fixed version"""
-    wp_base = wp_config["base_url"].rstrip('/')
-    auth_str = f"{wp_config['username']}:{wp_config['password']}"
-    auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
-    
-    # Standard headers for all requests
-    headers = {
-        "Authorization": f"Basic {auth_token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Use SEO title if available
-    final_title = metadata.get('seo_title', title) if metadata else title
-    
-    # Prepare content
-    html_content = prepare_article_html(content, metadata) if metadata else content
-    
-    img_id = None
-    
-    # Upload image if provided
-    if image_buffer:
-        try:
-            image_buffer.seek(0)
-            img_data = image_buffer.read()
-            
-            # Specific headers for image upload
-            img_headers = {
-                "Authorization": f"Basic {auth_token}",
-                "Content-Disposition": f"attachment; filename={final_title.replace(' ', '_')}.jpg",
-                "Content-Type": "image/jpeg"
-            }
-            
-            media_url = f"{wp_base}/wp-json/wp/v2/media"
-            img_resp = requests.post(media_url, headers=img_headers, data=img_data, timeout=20)
-            
-            if img_resp.status_code == 201:
-                img_id = img_resp.json()["id"]
-        except Exception as e:
-            pass  # Continue without image
-    
-    # Create/get tags
-    tag_ids = []
-    if metadata and metadata.get('tags'):
-        try:
-            tag_ids = create_or_get_tags(metadata['tags'], wp_config)
-        except Exception as e:
-            pass  # Continue without tags
-    
-    # Prepare post data
-    post_data = {
-        "title": final_title,
-        "content": html_content,
-        "status": "publish" if publish_now else "draft"
-    }
-    
-    if tag_ids:
-        post_data["tags"] = tag_ids
-    
-    if img_id:
-        post_data["featured_media"] = img_id
-    
-    if metadata and metadata.get('meta_description'):
-        post_data["excerpt"] = metadata['meta_description']
-    
+    """Publish article to WordPress - completely fixed version with better error handling"""
     try:
+        wp_base = wp_config["base_url"].rstrip('/')
+        auth_str = f"{wp_config['username']}:{wp_config['password']}"
+        auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+        
+        # Standard headers for all requests
+        headers = {
+            "Authorization": f"Basic {auth_token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Use SEO title if available
+        final_title = metadata.get('seo_title', title) if metadata else title
+        
+        # Prepare content
+        html_content = prepare_article_html(content, metadata) if metadata else content
+        
+        img_id = None
+        
+        # Upload image if provided
+        if image_buffer:
+            try:
+                image_buffer.seek(0)
+                img_data = image_buffer.read()
+                
+                # Specific headers for image upload
+                img_headers = {
+                    "Authorization": f"Basic {auth_token}",
+                    "Content-Disposition": f"attachment; filename={final_title.replace(' ', '_')}.jpg",
+                    "Content-Type": "image/jpeg"
+                }
+                
+                media_url = f"{wp_base}/wp-json/wp/v2/media"
+                img_resp = requests.post(media_url, headers=img_headers, data=img_data, timeout=30)
+                
+                if img_resp.status_code == 201:
+                    img_id = img_resp.json()["id"]
+                else:
+                    st.warning(f"Image upload failed: HTTP {img_resp.status_code}")
+                    
+            except Exception as e:
+                st.warning(f"Image upload error: {str(e)}")
+                # Continue without image
+        
+        # Create/get tags
+        tag_ids = []
+        if metadata and metadata.get('tags'):
+            try:
+                tag_ids = create_or_get_tags(metadata['tags'], wp_config)
+            except Exception as e:
+                st.warning(f"Tag creation failed: {str(e)}")
+                # Continue without tags
+        
+        # Prepare post data
+        post_data = {
+            "title": final_title,
+            "content": html_content,
+            "status": "publish" if publish_now else "draft"
+        }
+        
+        if tag_ids:
+            post_data["tags"] = tag_ids
+        
+        if img_id:
+            post_data["featured_media"] = img_id
+        
+        if metadata and metadata.get('meta_description'):
+            post_data["excerpt"] = metadata['meta_description']
+        
         # Test REST API endpoint first
         test_url = f"{wp_base}/wp-json/wp/v2"
-        test_resp = requests.get(test_url, headers=headers, timeout=15)
+        test_resp = requests.get(test_url, headers=headers, timeout=20)
         
         if test_resp.status_code != 200:
             return {"success": False, "error": f"REST API not accessible: HTTP {test_resp.status_code}"}
@@ -763,37 +768,50 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         # Check if response is JSON (not HTML)
         try:
             test_resp.json()
-        except:
-            return {"success": False, "error": "REST API returned HTML instead of JSON. Check if WordPress REST API is enabled."}
+        except Exception as e:
+            return {"success": False, "error": f"REST API returned invalid JSON: {str(e)}"}
         
         # Now try to publish
         post_url = f"{wp_base}/wp-json/wp/v2/posts"
-        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=25)
+        post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=30)
         
-        # Check for HTML response (indicates redirect or error page)
-        if post_resp.headers.get('content-type', '').startswith('text/html'):
-            return {"success": False, "error": "WordPress returned HTML page instead of JSON. Check authentication and API access."}
+        # Enhanced error handling for different response types
+        content_type = post_resp.headers.get('content-type', '').lower()
+        
+        if 'text/html' in content_type:
+            return {"success": False, "error": "WordPress returned HTML page instead of JSON. Check authentication and REST API access."}
         
         if post_resp.status_code == 201:
             try:
                 response_data = post_resp.json()
-                article_url = response_data["link"]
+                article_url = response_data.get("link", "")
                 return {"success": True, "url": article_url, "title": final_title}
-            except:
-                return {"success": False, "error": "Published successfully but couldn't parse response"}
+            except Exception as e:
+                return {"success": False, "error": f"Published but couldn't parse response: {str(e)}"}
+                
+        elif post_resp.status_code == 500:
+            return {"success": False, "error": "WordPress Internal Server Error (500). Check: 1) Application password format, 2) Security plugins blocking REST API, 3) Plugin conflicts"}
+            
+        elif post_resp.status_code == 401:
+            return {"success": False, "error": "Authentication failed (401). Check username and application password"}
+            
+        elif post_resp.status_code == 403:
+            return {"success": False, "error": "Access forbidden (403). Check user permissions for publishing posts"}
+            
         else:
             try:
                 error_data = post_resp.json()
-                return {"success": False, "error": f"HTTP {post_resp.status_code}: {error_data.get('message', 'Unknown error')}"}
+                error_message = error_data.get('message', 'Unknown error')
+                return {"success": False, "error": f"HTTP {post_resp.status_code}: {error_message}"}
             except:
                 return {"success": False, "error": f"HTTP {post_resp.status_code}: {post_resp.text[:200]}"}
     
     except requests.exceptions.Timeout:
-        return {"success": False, "error": "Request timeout - WordPress server might be slow"}
+        return {"success": False, "error": "Request timeout - WordPress server is slow or unresponsive"}
     except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Connection error - check WordPress URL"}
+        return {"success": False, "error": "Connection error - check WordPress URL and network connectivity"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 # Sidebar Configuration
 st.sidebar.header("🔧 Configuration")
@@ -1743,34 +1761,50 @@ with tab5:
                         final_metadata['tags'] = existing_tags + new_tags
                     
                     # Publish
-                    result = publish_to_wordpress(
-                        article_data['title'],
-                        article_data['content'],
-                        final_metadata,
-                        image_buffer,
-                        wp_config,
-                        publish_now
-                    )
-                    
-                    # Enhanced result display
-                    if result["success"]:
-                        st.success("✅ Published Successfully!")
-                        st.success(f"🔗 **Article URL:** {result['url']}")
+                    try:
+                        result = publish_to_wordpress(
+                            article_data['title'],
+                            article_data['content'],
+                            final_metadata,
+                            image_buffer,
+                            wp_config,
+                            publish_now
+                        )
                         
-                        # Log the publication
-                        st.session_state["publish_log"].append({
-                            "article": result.get('title', final_metadata.get('seo_title', article_data['title'])),
-                            "url": result["url"],
-                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "Published" if publish_now else "Draft"
-                        })
+                        # Enhanced result display
+                        if result["success"]:
+                            st.success("✅ Published Successfully!")
+                            st.success(f"🔗 **Article URL:** {result['url']}")
+                            
+                            # Log the publication
+                            st.session_state["publish_log"].append({
+                                "article": result.get('title', final_metadata.get('seo_title', article_data['title'])),
+                                "url": result["url"],
+                                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "status": "Published" if publish_now else "Draft"
+                            })
+                            
+                            # Quick actions
+                            st.link_button("🌐 View Article", result['url'])
                         
-                        # Quick actions
-                        st.link_button("🌐 View Article", result['url'])
+                        else:
+                            st.error("❌ Publishing Failed")
+                            st.error(f"**Error:** {result.get('error', 'Unknown error')}")
+                            
+                            # Add specific troubleshooting for 500 errors
+                            if "500" in str(result.get('error', '')):
+                                st.markdown("""
+                                **Troubleshooting HTTP 500 Error:**
+                                1. **Check Application Password**: Generate a new one in WordPress Admin → Users → Your Profile
+                                2. **Security Plugins**: Temporarily disable security plugins (WordFence, Sucuri, etc.)
+                                3. **REST API**: Ensure REST API is enabled in your WordPress settings
+                                4. **Plugin Conflicts**: Try deactivating plugins to identify conflicts
+                                5. **Server Logs**: Check your hosting provider's error logs for details
+                                """)
                     
-                    else:
-                        st.error("❌ Publishing Failed")
-                        st.error(f"**Error:** {result.get('error', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"❌ Unexpected error during publishing: {str(e)}")
+                        st.error("Please check your WordPress configuration and try again.")
         
         # Bulk publishing section
         st.subheader("🚀 Bulk Publishing")
@@ -1823,38 +1857,48 @@ with tab5:
                         final_metadata['tags'] = existing_tags + new_tags
                     
                     # Publish article
-                    result = publish_to_wordpress(
-                        article_data['title'],
-                        article_data['content'],
-                        final_metadata,
-                        image_buffer,
-                        wp_config,
-                        publish_now
-                    )
-                    
-                    if result["success"]:
-                        success_count += 1
+                    try:
+                        result = publish_to_wordpress(
+                            article_data['title'],
+                            article_data['content'],
+                            final_metadata,
+                            image_buffer,
+                            wp_config,
+                            publish_now
+                        )
                         
-                        with status_container:
-                            st.success(f"✅ Published: {current_title[:40]}... - {result['url']}")
+                        if result["success"]:
+                            success_count += 1
+                            
+                            with status_container:
+                                st.success(f"✅ Published: {current_title[:40]}... - {result['url']}")
+                            
+                            # Log publication
+                            st.session_state["publish_log"].append({
+                                "article": result.get("title", current_title),
+                                "url": result["url"],
+                                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "status": "Published" if publish_now else "Draft"
+                            })
                         
-                        # Log publication
-                        st.session_state["publish_log"].append({
-                            "article": result.get("title", current_title),
-                            "url": result["url"],
-                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "Published" if publish_now else "Draft"
-                        })
+                        else:
+                            failed_count += 1
+                            
+                            with status_container:
+                                st.error(f"❌ Failed: {current_title[:40]}... - {result.get('error', 'Unknown error')}")
+                            
+                            # Stop if not skipping failed articles
+                            if not skip_failed:
+                                st.error(f"⏹️ Bulk publishing stopped due to failure. {success_count} articles published successfully.")
+                                break
                     
-                    else:
+                    except Exception as e:
                         failed_count += 1
-                        
                         with status_container:
-                            st.error(f"❌ Failed: {current_title[:40]}... - {result.get('error', 'Unknown error')}")
+                            st.error(f"❌ Exception: {current_title[:40]}... - {str(e)}")
                         
-                        # Stop if not skipping failed articles
                         if not skip_failed:
-                            st.error(f"⏹️ Bulk publishing stopped due to failure. {success_count} articles published successfully.")
+                            st.error(f"⏹️ Bulk publishing stopped due to exception. {success_count} articles published successfully.")
                             break
                     
                     # Update progress
