@@ -680,7 +680,7 @@ def prepare_article_html(content, metadata):
 
 def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publish_now=True):
     """Publish article to WordPress - simplified and robust version"""
-    wp_base = wp_config["base_url"]
+    wp_base = wp_config["base_url"].rstrip('/')  # Remove trailing slash
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
     headers = {
@@ -739,14 +739,45 @@ def publish_to_wordpress(title, content, metadata, image_buffer, wp_config, publ
         post_data["excerpt"] = metadata['meta_description']
     
     try:
+        # Test REST API endpoint first
+        test_url = f"{wp_base}/wp-json/wp/v2"
+        test_resp = requests.get(test_url, headers=headers, timeout=10)
+        
+        if test_resp.status_code != 200:
+            return {"success": False, "error": f"REST API not accessible: HTTP {test_resp.status_code}"}
+        
+        # Check if response is JSON (not HTML)
+        try:
+            test_resp.json()
+        except:
+            return {"success": False, "error": "REST API returned HTML instead of JSON. Check if WordPress REST API is enabled."}
+        
+        # Now try to publish
         post_url = f"{wp_base}/wp-json/wp/v2/posts"
         post_resp = requests.post(post_url, headers=headers, json=post_data, timeout=20)
         
+        # Check for HTML response (indicates redirect or error page)
+        if post_resp.headers.get('content-type', '').startswith('text/html'):
+            return {"success": False, "error": "WordPress returned HTML page instead of JSON. Check authentication and API access."}
+        
         if post_resp.status_code == 201:
-            article_url = post_resp.json()["link"]
-            return {"success": True, "url": article_url}
+            try:
+                response_data = post_resp.json()
+                article_url = response_data["link"]
+                return {"success": True, "url": article_url}
+            except:
+                return {"success": False, "error": "Published successfully but couldn't parse response"}
         else:
-            return {"success": False, "error": f"HTTP {post_resp.status_code}: {post_resp.text}"}
+            try:
+                error_data = post_resp.json()
+                return {"success": False, "error": f"HTTP {post_resp.status_code}: {error_data.get('message', 'Unknown error')}"}
+            except:
+                return {"success": False, "error": f"HTTP {post_resp.status_code}: {post_resp.text[:200]}"}
+    
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "Request timeout - WordPress server might be slow"}
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Connection error - check WordPress URL"}
     except Exception as e:
         return {"success": False, "error": str(e)}
     
@@ -852,11 +883,67 @@ else:
         "password": st.secrets.get("WP_PASSWORD", "")
     }
 
-# WordPress status
+# WordPress status and testing
 if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("password"):
     st.sidebar.success("✅ WordPress configured")
+    
+    # Show basic info
+    with st.sidebar.expander("📋 WordPress Details"):
+        st.write(f"**URL:** {wp_config['base_url']}")
+        st.write(f"**User:** {wp_config['username']}")
+        st.write(f"**Password:** {'*' * len(wp_config['password'])}")
+    
+    # Enhanced testing buttons
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("🔍 Quick Test"):
+            try:
+                wp_base = wp_config["base_url"].rstrip('/')
+                auth_str = f"{wp_config['username']}:{wp_config['password']}"
+                auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+                headers = {"Authorization": f"Basic {auth_token}"}
+                
+                # Test REST API root
+                test_url = f"{wp_base}/wp-json/wp/v2"
+                response = requests.get(test_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    # Check if response is JSON
+                    try:
+                        response.json()
+                        st.sidebar.success("✅ REST API OK!")
+                    except:
+                        st.sidebar.error("❌ REST API returns HTML")
+                elif response.status_code == 401:
+                    st.sidebar.error("❌ Auth failed")
+                elif response.status_code == 403:
+                    st.sidebar.error("❌ Access denied")
+                elif response.status_code == 404:
+                    st.sidebar.error("❌ REST API not found")
+                else:
+                    st.sidebar.error(f"❌ Error: {response.status_code}")
+            
+            except requests.exceptions.Timeout:
+                st.sidebar.error("❌ Timeout")
+            except Exception as e:
+                st.sidebar.error(f"❌ Error: {str(e)[:20]}...")
+    
+    with col2:
+        if st.button("📊 Full Test"):
+            # This will be handled in the main app area for detailed output
+            st.session_state["run_detailed_test"] = True
+            st.rerun()
+
 else:
     st.sidebar.warning("⚠️ WordPress not configured")
+    
+    if not wp_config.get("base_url"):
+        st.sidebar.error("Missing: Website URL")
+    if not wp_config.get("username"):
+        st.sidebar.error("Missing: Username")
+    if not wp_config.get("password"):
+        st.sidebar.error("Missing: Password")
 
 # Initialize HF client
 hf_client = init_hf_client()
@@ -865,9 +952,190 @@ if hf_client:
 else:
     st.sidebar.warning("⚠️ Hugging Face not configured")
 
+def test_wordpress_connection_detailed(wp_config):
+    """Detailed WordPress connection testing"""
+    wp_base = wp_config["base_url"].rstrip('/')
+    auth_str = f"{wp_config['username']}:{wp_config['password']}"
+    auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+    headers = {"Authorization": f"Basic {auth_token}"}
+    
+    st.write("**Testing WordPress Connection...**")
+    
+    # Test 1: Basic connectivity
+    st.write("🔍 **Test 1: Basic Website Access**")
+    try:
+        response = requests.get(wp_base, timeout=10)
+        if response.status_code == 200:
+            st.success(f"✅ Website accessible (HTTP {response.status_code})")
+        else:
+            st.error(f"❌ Website returned HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        st.error(f"❌ Cannot reach website: {str(e)}")
+        return False
+    
+    # Test 2: REST API discovery
+    st.write("🔍 **Test 2: REST API Discovery**")
+    try:
+        # Check if REST API endpoint is discoverable
+        response = requests.get(f"{wp_base}/wp-json/", timeout=10)
+        if response.status_code == 200:
+            try:
+                api_data = response.json()
+                st.success("✅ REST API endpoint found")
+                st.write(f"WordPress version: {api_data.get('generator', 'Unknown')}")
+            except:
+                st.error("❌ REST API returns invalid JSON")
+                return False
+        else:
+            st.error(f"❌ REST API not accessible (HTTP {response.status_code})")
+            return False
+    except Exception as e:
+        st.error(f"❌ REST API error: {str(e)}")
+        return False
+    
+    # Test 3: Authentication
+    st.write("🔍 **Test 3: Authentication Test**")
+    try:
+        response = requests.get(f"{wp_base}/wp-json/wp/v2/users/me", headers=headers, timeout=10)
+        if response.status_code == 200:
+            try:
+                user_data = response.json()
+                st.success(f"✅ Authentication successful")
+                st.write(f"Logged in as: {user_data.get('name', 'Unknown')} (ID: {user_data.get('id', 'Unknown')})")
+                st.write(f"User roles: {', '.join(user_data.get('roles', []))}")
+            except:
+                st.error("❌ Authentication response invalid")
+                return False
+        elif response.status_code == 401:
+            st.error("❌ Authentication failed - check username/password")
+            return False
+        elif response.status_code == 403:
+            st.error("❌ Authentication forbidden - check user permissions")
+            return False
+        else:
+            st.error(f"❌ Authentication error (HTTP {response.status_code})")
+            return False
+    except Exception as e:
+        st.error(f"❌ Authentication test error: {str(e)}")
+        return False
+    
+    # Test 4: Posts endpoint access
+    st.write("🔍 **Test 4: Posts Endpoint Access**")
+    try:
+        response = requests.get(f"{wp_base}/wp-json/wp/v2/posts?per_page=1", headers=headers, timeout=10)
+        if response.status_code == 200:
+            try:
+                posts_data = response.json()
+                st.success("✅ Posts endpoint accessible")
+                st.write(f"Found {len(posts_data)} posts in response")
+            except:
+                st.error("❌ Posts endpoint returns invalid JSON")
+                return False
+        else:
+            st.error(f"❌ Posts endpoint error (HTTP {response.status_code})")
+            return False
+    except Exception as e:
+        st.error(f"❌ Posts endpoint test error: {str(e)}")
+        return False
+    
+    # Test 5: Create permission test
+    st.write("🔍 **Test 5: Create Post Permission Test**")
+    try:
+        test_post_data = {
+            "title": "Test Post - Delete Me",
+            "content": "This is a test post. Please delete.",
+            "status": "draft"
+        }
+        
+        response = requests.post(f"{wp_base}/wp-json/wp/v2/posts", 
+                               headers={**headers, "Content-Type": "application/json"}, 
+                               json=test_post_data, timeout=10)
+        
+        if response.status_code == 201:
+            try:
+                post_data = response.json()
+                st.success("✅ Post creation successful")
+                st.write(f"Test post created with ID: {post_data.get('id')}")
+                
+                # Try to delete the test post
+                delete_response = requests.delete(f"{wp_base}/wp-json/wp/v2/posts/{post_data.get('id')}", 
+                                               headers=headers, timeout=10)
+                if delete_response.status_code == 200:
+                    st.success("✅ Test post deleted successfully")
+                else:
+                    st.warning(f"⚠️ Test post created but couldn't delete (ID: {post_data.get('id')})")
+                
+            except:
+                st.error("❌ Post creation response invalid")
+                return False
+        elif response.status_code == 401:
+            st.error("❌ No permission to create posts - authentication issue")
+            return False
+        elif response.status_code == 403:
+            st.error("❌ No permission to create posts - user role issue")
+            return False
+        else:
+            st.error(f"❌ Post creation failed (HTTP {response.status_code})")
+            try:
+                error_data = response.json()
+                st.write(f"Error details: {error_data.get('message', 'Unknown error')}")
+            except:
+                st.write(f"Response: {response.text[:200]}...")
+            return False
+    except Exception as e:
+        st.error(f"❌ Post creation test error: {str(e)}")
+        return False
+    
+    return True
+
+# Handle detailed WordPress testing
+if st.session_state.get("run_detailed_test"):
+    st.header("🔍 WordPress Connection Diagnostic")
+    
+    if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("password"):
+        if test_wordpress_connection_detailed(wp_config):
+            st.success("🎉 All tests passed! Your WordPress is ready for publishing.")
+        else:
+            st.error("❌ Some tests failed. Please check the errors above and your WordPress configuration.")
+            
+            # Common solutions
+            st.subheader("💡 Common Solutions")
+            st.markdown("""
+            **If REST API is not accessible:**
+            - Check if WordPress REST API is enabled (usually enabled by default)
+            - Verify your WordPress URL is correct (should be like `https://yoursite.com`)
+            - Check if there are security plugins blocking the REST API
+            
+            **If authentication fails:**
+            - Verify username is correct (case-sensitive)
+            - Make sure you're using an Application Password, not your regular login password
+            - Generate a new Application Password in WordPress Admin → Users → Your Profile
+            
+            **If permission errors occur:**
+            - Ensure your user has 'Editor' or 'Administrator' role
+            - Check if your user has 'publish_posts' capability
+            
+            **If getting HTML instead of JSON:**
+            - Your site might have a security plugin interfering
+            - Try temporarily disabling security plugins
+            - Check if there's a maintenance mode active
+            """)
+    else:
+        st.error("❌ WordPress configuration incomplete")
+    
+    # Clear the test flag
+    st.session_state["run_detailed_test"] = False
+    
 # Main App
 st.title("📚 Enhanced SEO Content Automation")
 st.markdown("Upload articles → Generate metadata → Create optimized images → Bulk publish to WordPress")
+
+# Show current provider status
+if current_api_key:
+    st.success(f"✅ Connected to {ai_provider}")
+else:
+    st.error(f"❌ {ai_provider} API key not found in secrets")
 
 # Tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
