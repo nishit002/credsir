@@ -1853,7 +1853,9 @@ with tab5:
                             "has_metadata": "Yes"
                         })
                     else:
-                        st.error(f"❌ Publishing failed: {result['error']}")
+                        error_message = result.get("error", "No error message found")
+                        st.error(f"❌ Publishing failed: {error_message}")
+
         
         # Bulk publishing
         st.subheader("🚀 Bulk Publishing")
