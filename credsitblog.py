@@ -9,6 +9,7 @@ import base64
 from io import BytesIO
 from docx import Document
 from huggingface_hub import InferenceClient
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import os
 from urllib.parse import urlparse
 
@@ -28,6 +29,8 @@ if "publish_log" not in st.session_state:
     st.session_state["publish_log"] = []
 if "existing_posts" not in st.session_state:
     st.session_state["existing_posts"] = []
+if "existing_tags" not in st.session_state:
+    st.session_state["existing_tags"] = []
 if "custom_wp_config" not in st.session_state:
     st.session_state["custom_wp_config"] = {}
 
@@ -85,6 +88,75 @@ def extract_keywords_from_content(content):
     sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
     return [word for word, freq in sorted_words[:5] if freq > 2]
 
+def get_wordpress_tags(wp_config):
+    """Fetch existing WordPress tags"""
+    try:
+        auth_str = f"{wp_config['username']}:{wp_config['password']}"
+        auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+        headers = {"Authorization": f"Basic {auth_token}"}
+        
+        url = f"{wp_config['base_url']}/wp-json/wp/v2/tags?per_page=100"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            tags_data = response.json()
+            return [{"id": tag["id"], "name": tag["name"], "slug": tag["slug"]} for tag in tags_data]
+        else:
+            st.warning(f"Failed to fetch tags: {response.status_code}")
+            return []
+    except Exception as e:
+        st.warning(f"Error fetching tags: {str(e)}")
+        return []
+
+def create_or_get_tags(tag_names, wp_config):
+    """Create new tags or get existing ones"""
+    auth_str = f"{wp_config['username']}:{wp_config['password']}"
+    auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
+    headers = {"Authorization": f"Basic {auth_token}"}
+    
+    tag_ids = []
+    
+    for tag_name in tag_names:
+        if not tag_name.strip():
+            continue
+            
+        tag_name = tag_name.strip()
+        
+        # First check if tag already exists
+        existing_tag = None
+        for tag in st.session_state.get("existing_tags", []):
+            if tag["name"].lower() == tag_name.lower():
+                existing_tag = tag
+                break
+        
+        if existing_tag:
+            tag_ids.append(existing_tag["id"])
+            continue
+        
+        # Create new tag
+        try:
+            tag_data = {"name": tag_name}
+            response = requests.post(f"{wp_config['base_url']}/wp-json/wp/v2/tags", 
+                                   headers=headers, json=tag_data)
+            
+            if response.status_code == 201:
+                new_tag = response.json()
+                tag_ids.append(new_tag["id"])
+                
+                # Add to existing tags cache
+                st.session_state["existing_tags"].append({
+                    "id": new_tag["id"],
+                    "name": new_tag["name"],
+                    "slug": new_tag["slug"]
+                })
+            else:
+                st.warning(f"Failed to create tag '{tag_name}': {response.text}")
+        
+        except Exception as e:
+            st.warning(f"Error creating tag '{tag_name}': {str(e)}")
+    
+    return tag_ids
+
 def generate_metadata_for_article(content, title, api_key, provider):
     """Generate SEO metadata for uploaded article using AI"""
     keywords = ', '.join(extract_keywords_from_content(content))
@@ -103,7 +175,7 @@ Generate:
 4. Secondary keywords (5 keywords)
 5. Content category (Guide/Tutorial/Review/Comparison/How-to/FAQ)
 6. Search volume estimate (High/Medium/Low) for Indian market
-7. Tags for WordPress (5-8 tags)
+7. Tags for WordPress (5-8 relevant SEO tags)
 
 Respond in JSON format:
 {{
@@ -137,9 +209,9 @@ Respond in JSON format:
             try:
                 response = requests.post(url, json=body, headers=headers)
                 if response.status_code == 200:
-                    content = response.json()["choices"][0]["message"]["content"]
+                    content_response = response.json()["choices"][0]["message"]["content"]
                     try:
-                        return json.loads(content)
+                        return json.loads(content_response)
                     except:
                         # Fallback metadata
                         return {
@@ -175,9 +247,9 @@ Respond in JSON format:
         try:
             response = requests.post(url, json=body, headers=headers)
             if response.status_code == 200:
-                content = response.json()["choices"][0]["message"]["content"]
+                content_response = response.json()["choices"][0]["message"]["content"]
                 try:
-                    return json.loads(content)
+                    return json.loads(content_response)
                 except:
                     return {
                         "seo_title": title,
@@ -272,6 +344,221 @@ Create similar prompt for the given topic. Return only the prompt text, no quote
             return f"Professional illustration about {primary_keyword}, clean design, modern style, educational content, high quality"
     
     return f"Professional illustration about {primary_keyword}, clean design, modern style, educational content, high quality"
+
+def create_property_overlay(img, primary_text, secondary_text, output_size=(1200, 675)):
+    """Create a property overlay with responsive design using MagicBricks style"""
+    
+    # Ensure image is in RGB mode
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    # Resize to target size
+    img = img.resize(output_size, Image.Resampling.LANCZOS)
+    width, height = output_size
+    
+    # Create overlay layer
+    overlay = Image.new("RGBA", output_size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    # Color scheme - vibrant red like MagicBricks
+    gradient_red = (231, 76, 60)
+    gradient_dark = (192, 57, 43)
+    white = (255, 255, 255)
+    
+    # Determine layout based on aspect ratio
+    aspect_ratio = width / height
+    
+    if aspect_ratio > 1.5:  # Wide format (landscape)
+        text_area_percentage = 0.30
+        gradient_position = "bottom"
+    elif aspect_ratio < 0.8:  # Tall format (portrait/mobile)
+        text_area_percentage = 0.25
+        gradient_position = "bottom"
+    else:  # Square or near-square
+        text_area_percentage = 0.25
+        gradient_position = "bottom"
+    
+    # Calculate gradient dimensions
+    if gradient_position == "bottom":
+        gradient_height = int(height * text_area_percentage)
+        gradient_start_y = height - gradient_height
+        gradient_width = width
+        gradient_start_x = 0
+    
+    # Create completely dissolved/seamless gradient
+    for y in range(gradient_height):
+        # Calculate gradient progression (0 to 1)
+        progress = y / gradient_height
+        
+        # Ultra-smooth easing for completely dissolved effect
+        eased_progress = progress * progress * progress * (progress * (progress * 6 - 15) + 10)
+        
+        # Very gradual alpha progression for dissolved effect
+        alpha = int(15 + (200 * eased_progress))
+        
+        # Smooth color interpolation
+        r = int(gradient_dark[0] + (gradient_red[0] - gradient_dark[0]) * eased_progress)
+        g = int(gradient_dark[1] + (gradient_red[1] - gradient_dark[1]) * eased_progress)
+        b = int(gradient_dark[2] + (gradient_red[2] - gradient_dark[2]) * eased_progress)
+        
+        # Draw ultra-smooth gradient line
+        draw.rectangle([gradient_start_x, gradient_start_y + y, 
+                       gradient_start_x + gradient_width, gradient_start_y + y + 1], 
+                      fill=(r, g, b, alpha))
+    
+    # Add additional smoothing blur effect above gradient
+    blur_height = max(20, int(height * 0.02))  # Responsive blur height
+    for i in range(blur_height):
+        progress = 1 - (i / blur_height)
+        alpha = int(5 * progress)
+        draw.rectangle([gradient_start_x, gradient_start_y - blur_height + i, 
+                       gradient_start_x + gradient_width, gradient_start_y - blur_height + i + 1], 
+                      fill=(gradient_dark[0], gradient_dark[1], gradient_dark[2], alpha))
+    
+    # Responsive font sizing based on image dimensions
+    def get_responsive_font_size(base_size, width, height):
+        scale_factor = min(width / 1200, height / 675)  # Base reference size
+        return max(12, int(base_size * scale_factor))
+    
+    # Load fonts with marketing-style emphasis
+    def get_marketing_font(size, bold=False):
+        marketing_fonts = [
+            "arialbd.ttf", "calibrib.ttf", "arial.ttf", "calibri.ttf",
+            "/System/Library/Fonts/Arial Bold.ttf", "/System/Library/Fonts/Helvetica-Bold.ttf",
+            "/System/Library/Fonts/Arial.ttf", "/System/Library/Fonts/Helvetica.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        ]
+        
+        for font_path in marketing_fonts:
+            try:
+                return ImageFont.truetype(font_path, size)
+            except:
+                continue
+        
+        return ImageFont.load_default()
+    
+    # Responsive font sizes
+    primary_font_size = get_responsive_font_size(36, width, height)
+    secondary_font_size = get_responsive_font_size(24, width, height)
+    
+    primary_font = get_marketing_font(primary_font_size, bold=True)
+    secondary_font = get_marketing_font(secondary_font_size, bold=False)
+    
+    # Responsive text positioning
+    text_padding = max(20, int(width * 0.025))
+    text_start_y = gradient_start_y + (gradient_height * 0.6)
+    
+    # Helper function for marketing-style text with strong shadows
+    def draw_marketing_text(text, position, font, text_color=white):
+        x, y = position
+        
+        # Responsive shadow offsets
+        shadow_scale = min(width / 1200, height / 675)
+        shadow_offsets = [
+            (int(2 * shadow_scale), int(2 * shadow_scale)),
+            (int(1 * shadow_scale), int(1 * shadow_scale)),
+            (int(3 * shadow_scale), int(3 * shadow_scale)),
+            (int(4 * shadow_scale), int(4 * shadow_scale))
+        ]
+        
+        for offset_x, offset_y in shadow_offsets:
+            shadow_alpha = max(50, 150 - (offset_x * 30))
+            draw.text((x + offset_x, y + offset_y), text, font=font, fill=(0, 0, 0, shadow_alpha))
+        
+        # Main text
+        draw.text((x, y), text, font=font, fill=text_color)
+    
+    # Position text with word wrapping for smaller sizes
+    def wrap_text(text, font, max_width):
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+            
+            if line_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    lines.append(word)  # Single word too long
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
+    
+    # Text positioning with responsive wrapping
+    available_text_width = width - (text_padding * 2)
+    
+    if primary_text:
+        # Wrap primary text if needed
+        primary_lines = wrap_text(primary_text, primary_font, available_text_width)
+        
+        # Calculate total height needed
+        primary_bbox = draw.textbbox((0, 0), primary_lines[0], font=primary_font)
+        line_height = primary_bbox[3] - primary_bbox[1]
+        total_primary_height = len(primary_lines) * line_height + (len(primary_lines) - 1) * 5
+        
+        # Position primary text
+        current_y = text_start_y
+        for line in primary_lines:
+            bbox = draw.textbbox((0, 0), line, font=primary_font)
+            line_width = bbox[2] - bbox[0]
+            line_x = (width - line_width) // 2
+            
+            draw_marketing_text(line, (line_x, current_y), primary_font)
+            current_y += line_height + 5
+        
+        if secondary_text:
+            # Wrap secondary text if needed
+            secondary_lines = wrap_text(secondary_text, secondary_font, available_text_width)
+            
+            # Position secondary text below primary
+            current_y += 10  # Gap between primary and secondary
+            
+            for line in secondary_lines:
+                bbox = draw.textbbox((0, 0), line, font=secondary_font)
+                line_width = bbox[2] - bbox[0]
+                line_x = (width - line_width) // 2
+                
+                draw_marketing_text(line, (line_x, current_y), secondary_font)
+                
+                secondary_bbox = draw.textbbox((0, 0), line, font=secondary_font)
+                current_y += (secondary_bbox[3] - secondary_bbox[1]) + 5
+    
+    # Composite the overlay onto the image
+    final_img = Image.alpha_composite(img.convert("RGBA"), overlay)
+    
+    # Apply subtle blur to the gradient area for smoother dissolution
+    mask = Image.new("L", output_size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    
+    # Create mask for gradient area only
+    for y in range(gradient_height):
+        alpha = int(255 * (y / gradient_height))
+        mask_draw.rectangle([gradient_start_x, gradient_start_y + y, 
+                           gradient_start_x + gradient_width, gradient_start_y + y + 1], 
+                           fill=alpha)
+    
+    # Apply subtle blur to gradient area
+    blur_radius = max(0.5, min(2.0, width / 2400))  # Responsive blur
+    blurred = final_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    final_img = Image.composite(blurred, final_img, mask)
+    
+    # Enhance for marketing appeal
+    enhancer = ImageEnhance.Contrast(final_img)
+    final_img = enhancer.enhance(1.08)
+    
+    return final_img.convert("RGB")
 
 def generate_ai_image(prompt, hf_client):
     """Generate image using Hugging Face Inference Client"""
@@ -417,7 +704,7 @@ def apply_internal_links_to_content(content, links_data):
     return modified_content
 
 def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_now=True):
-    """Publish article to WordPress"""
+    """Publish article to WordPress with enhanced tag handling"""
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
     headers = {"Authorization": f"Basic {auth_token}"}
@@ -442,20 +729,10 @@ def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_
         except Exception as e:
             st.error(f"Image upload error: {str(e)}")
     
-    # Create/get tags
+    # Handle tags with enhanced error handling
     tag_ids = []
     if tags:
-        for tag in [t.strip() for t in tags if t.strip()]:
-            try:
-                tag_check = requests.get(f"{wp_config['base_url']}/wp-json/wp/v2/tags?search={tag}", headers=headers)
-                if tag_check.status_code == 200 and tag_check.json():
-                    tag_ids.append(tag_check.json()[0]["id"])
-                else:
-                    tag_create = requests.post(f"{wp_config['base_url']}/wp-json/wp/v2/tags", headers=headers, json={"name": tag})
-                    if tag_create.status_code == 201:
-                        tag_ids.append(tag_create.json()["id"])
-            except Exception as e:
-                st.warning(f"Tag creation failed for '{tag}': {str(e)}")
+        tag_ids = create_or_get_tags(tags, wp_config)
     
     # Publish article
     post_data = {
@@ -537,7 +814,7 @@ else:
 if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("password"):
     st.sidebar.success("✅ WordPress configured")
     
-    # Test connection
+    # Test connection and fetch tags
     if st.sidebar.button("🔍 Test WordPress Connection"):
         try:
             auth_str = f"{wp_config['username']}:{wp_config['password']}"
@@ -547,6 +824,11 @@ if wp_config.get("base_url") and wp_config.get("username") and wp_config.get("pa
             response = requests.get(f"{wp_config['base_url']}/wp-json/wp/v2/posts?per_page=1", headers=headers)
             if response.status_code == 200:
                 st.sidebar.success("✅ WordPress connection successful!")
+                
+                # Fetch existing tags
+                existing_tags = get_wordpress_tags(wp_config)
+                st.session_state["existing_tags"] = existing_tags
+                st.sidebar.info(f"📋 Fetched {len(existing_tags)} existing tags")
             else:
                 st.sidebar.error(f"❌ Connection failed: {response.status_code}")
         except Exception as e:
@@ -564,6 +846,35 @@ else:
 # Main App
 st.title("📚 Enhanced SEO Content Automation")
 st.markdown("Upload articles → Generate metadata → Create optimized images → Bulk publish to WordPress")
+
+# Custom CSS for enhanced styling
+st.markdown("""
+<style>
+    .image-option-box {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        padding: 1.5rem;
+        border-radius: 12px;
+        border-left: 4px solid #e74c3c;
+        margin: 1rem 0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .success-box {
+        background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+        padding: 1.5rem;
+        border-radius: 12px;
+        border-left: 4px solid #28a745;
+        margin: 1rem 0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .tag-box {
+        background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 3px solid #ffc107;
+        margin: 0.5rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Tabs
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
@@ -681,8 +992,33 @@ with tab2:
                             st.session_state["article_metadata"][selected_file] = metadata
                             st.success("✅ Metadata generated!")
                             
-                            # Display metadata
+                            # Display metadata with tag management
                             st.json(metadata)
+                            
+                            # Tag management section
+                            st.markdown('<div class="tag-box">', unsafe_allow_html=True)
+                            st.write("**🏷️ Tag Management:**")
+                            
+                            # Show existing tags for reference
+                            if st.session_state.get("existing_tags"):
+                                existing_tag_names = [tag["name"] for tag in st.session_state["existing_tags"]]
+                                st.write(f"**Existing WordPress Tags:** {', '.join(existing_tag_names[:10])}{'...' if len(existing_tag_names) > 10 else ''}")
+                            
+                            # Allow editing generated tags
+                            current_tags = metadata.get("tags", [])
+                            edited_tags = st.text_input(
+                                "Edit Tags (comma-separated)",
+                                value=", ".join(current_tags),
+                                help="Modify the generated tags or add custom ones"
+                            )
+                            
+                            if st.button("💾 Update Tags"):
+                                new_tags = [tag.strip() for tag in edited_tags.split(',') if tag.strip()]
+                                st.session_state["article_metadata"][selected_file]["tags"] = new_tags
+                                st.success("✅ Tags updated!")
+                                st.rerun()
+                            
+                            st.markdown('</div>', unsafe_allow_html=True)
         
         # Bulk metadata generation
         st.subheader("🚀 Bulk Metadata Generation")
@@ -743,12 +1079,12 @@ with tab2:
         st.info("⚠️ Please upload articles first in Step 1")
 
 with tab3:
-    st.header("🖼️ Step 3: AI-Optimized Image Generation")
+    st.header("🖼️ Step 3: Enhanced Image Generation")
     
-    if st.session_state["uploaded_articles"] and st.session_state["article_metadata"] and hf_client:
-        st.subheader("Generate Optimized Images")
+    if st.session_state["uploaded_articles"] and st.session_state["article_metadata"]:
+        st.subheader("Image Generation Options")
         
-        # Single image generation with editable prompts
+        # Single image generation with multiple options
         article_files = [f for f in st.session_state["uploaded_articles"].keys() if f in st.session_state["article_metadata"]]
         selected_file = st.selectbox("Select article for image generation", article_files, key="img_select")
         
@@ -756,169 +1092,285 @@ with tab3:
             article_data = st.session_state["uploaded_articles"][selected_file]
             metadata = st.session_state["article_metadata"][selected_file]
             
+            st.markdown('<div class="image-option-box">', unsafe_allow_html=True)
             st.write(f"**Article:** {article_data['title']}")
             st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'N/A')}")
             st.write(f"**Category:** {metadata.get('category', 'N/A')}")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Image source selection
+            image_source = st.radio(
+                "Choose image source:",
+                ["🤖 Generate with AI", "📁 Upload Existing Image"],
+                horizontal=True
+            )
             
             # Initialize session state for prompts
             if f"prompt_{selected_file}" not in st.session_state:
                 st.session_state[f"prompt_{selected_file}"] = ""
             
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                # Button to generate AI prompt
-                if st.button("🤖 Generate AI Prompt", key="gen_prompt"):
-                    if current_api_key:
-                        with st.spinner("Creating optimized prompt..."):
-                            optimized_prompt = generate_optimized_image_prompt(
-                                article_data['title'],
-                                article_data['content'],
-                                metadata.get('primary_keyword', ''),
-                                current_api_key,
-                                ai_provider
-                            )
-                            st.session_state[f"prompt_{selected_file}"] = optimized_prompt
+            if image_source == "🤖 Generate with AI":
+                if hf_client and current_api_key:
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        # Button to generate AI prompt
+                        if st.button("🤖 Generate AI Prompt", key="gen_prompt"):
+                            with st.spinner("Creating optimized prompt..."):
+                                optimized_prompt = generate_optimized_image_prompt(
+                                    article_data['title'],
+                                    article_data['content'],
+                                    metadata.get('primary_keyword', ''),
+                                    current_api_key,
+                                    ai_provider
+                                )
+                                st.session_state[f"prompt_{selected_file}"] = optimized_prompt
+                                st.rerun()
+                    
+                    with col2:
+                        # Button to use default prompt
+                        if st.button("📝 Use Default Prompt", key="default_prompt"):
+                            default_prompt = f"Professional illustration for {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, high quality, minimalist style"
+                            st.session_state[f"prompt_{selected_file}"] = default_prompt
                             st.rerun()
-                    else:
-                        st.error(f"❌ {ai_provider} API key required for AI prompt generation")
-            
-            with col2:
-                # Button to use default prompt
-                if st.button("📝 Use Default Prompt", key="default_prompt"):
-                    default_prompt = f"Professional illustration for {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, high quality, minimalist style"
-                    st.session_state[f"prompt_{selected_file}"] = default_prompt
-                    st.rerun()
-            
-            # Editable prompt text area
-            image_prompt = st.text_area(
-                "✏️ **Edit Image Prompt** (You can modify this before generating):",
-                value=st.session_state[f"prompt_{selected_file}"],
-                height=100,
-                help="Describe the image you want. For best results with Stable Diffusion: use simple, clear descriptions, avoid complex scenes, focus on single subjects, use professional style keywords."
-            )
-            
-            # Prompt suggestions
-            with st.expander("💡 Prompt Suggestions & Tips"):
-                st.markdown("""
-                **Good prompt examples:**
-                - `Professional infographic about [topic], clean blue design, modern layout, minimalist`
-                - `Educational illustration, simple diagram style, white background, professional`
-                - `Modern website mockup showing [concept], clean interface, blue gradient`
-                - `Business presentation slide design, [topic] theme, professional layout`
-                
-                **Tips for better images:**
-                - Keep prompts simple and clear (20-50 words)
-                - Use style keywords: professional, clean, modern, minimalist
-                - Specify colors: blue, white, gradient
-                - Avoid complex scenes or multiple objects
-                - Include format: illustration, infographic, diagram, mockup
-                """)
-            
-            # Preset prompt buttons
-            st.write("**🎨 Quick Preset Prompts:**")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("📊 Infographic Style"):
-                    preset = f"Professional infographic about {metadata.get('primary_keyword', 'topic')}, clean blue and white design, modern layout, data visualization, minimalist style"
-                    st.session_state[f"prompt_{selected_file}"] = preset
-                    st.rerun()
-            
-            with col2:
-                if st.button("💻 Tech/Digital Style"):
-                    preset = f"Modern digital illustration about {metadata.get('primary_keyword', 'technology')}, sleek interface design, blue gradient background, professional tech style"
-                    st.session_state[f"prompt_{selected_file}"] = preset
-                    st.rerun()
-            
-            with col3:
-                if st.button("📚 Educational Style"):
-                    preset = f"Educational illustration about {metadata.get('primary_keyword', 'subject')}, simple diagram style, clean white background, learning concept, professional design"
-                    st.session_state[f"prompt_{selected_file}"] = preset
-                    st.rerun()
-            
-            # Update the prompt in session state when text area changes
-            if image_prompt != st.session_state[f"prompt_{selected_file}"]:
-                st.session_state[f"prompt_{selected_file}"] = image_prompt
-            
-            # Generate image button
-            if st.button("🎨 Generate Image", type="primary"):
-                if image_prompt.strip():
-                    with st.spinner("Generating image..."):
-                        image_buffer = generate_ai_image(image_prompt.strip(), hf_client)
-                        
-                        if image_buffer:
-                            st.session_state["images"][selected_file] = image_buffer
-                            st.success("✅ Image generated successfully!")
-                            st.image(image_buffer, caption=f"Generated for: {article_data['title']}")
+                    
+                    # Editable prompt text area
+                    image_prompt = st.text_area(
+                        "✏️ **Edit Image Prompt** (You can modify this before generating):",
+                        value=st.session_state[f"prompt_{selected_file}"],
+                        height=100,
+                        help="Describe the image you want. For best results with Stable Diffusion: use simple, clear descriptions, avoid complex scenes, focus on single subjects, use professional style keywords."
+                    )
+                    
+                    # Update the prompt in session state when text area changes
+                    if image_prompt != st.session_state[f"prompt_{selected_file}"]:
+                        st.session_state[f"prompt_{selected_file}"] = image_prompt
+                    
+                    # Generate image button
+                    if st.button("🎨 Generate AI Image", type="primary"):
+                        if image_prompt.strip():
+                            with st.spinner("Generating image..."):
+                                image_buffer = generate_ai_image(image_prompt.strip(), hf_client)
+                                
+                                if image_buffer:
+                                    st.session_state["images"][selected_file] = {
+                                        "buffer": image_buffer,
+                                        "source": "ai_generated",
+                                        "prompt": image_prompt.strip()
+                                    }
+                                    st.success("✅ Image generated successfully!")
+                                    # Display the generated image
+                                    st.image(image_buffer, caption=f"Generated: {article_data['title']}")
+                                else:
+                                    st.error("❌ Image generation failed. Try a different prompt.")
                         else:
-                            st.error("❌ Image generation failed. Try a different prompt or check your HuggingFace token.")
+                            st.error("❌ Please enter a prompt before generating an image.")
                 else:
-                    st.error("❌ Please enter a prompt before generating an image.")
+                    st.error("❌ AI generation requires both HuggingFace token and API key.")
             
-            # Show current image if exists
+            else:  # Upload existing image
+                uploaded_image = st.file_uploader(
+                    "Upload an existing image",
+                    type=['png', 'jpg', 'jpeg'],
+                    help="Upload your own image for this article"
+                )
+                
+                if uploaded_image:
+                    # Convert uploaded file to buffer
+                    image_buffer = BytesIO(uploaded_image.read())
+                    st.session_state["images"][selected_file] = {
+                        "buffer": image_buffer,
+                        "source": "uploaded",
+                        "filename": uploaded_image.name
+                    }
+                    st.success("✅ Image uploaded successfully!")
+                    st.image(image_buffer, caption=f"Uploaded: {uploaded_image.name}")
+            
+            # Text overlay options (if image exists)
+            if selected_file in st.session_state["images"]:
+                st.subheader("🎨 Add Text Overlay")
+                
+                # Overlay text inputs
+                overlay_enabled = st.checkbox("Add text overlay to image", key=f"overlay_{selected_file}")
+                
+                if overlay_enabled:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        primary_overlay_text = st.text_input(
+                            "Primary Text",
+                            value=metadata.get('seo_title', article_data['title'])[:40] + "...",
+                            help="Main headline text for overlay"
+                        )
+                    
+                    with col2:
+                        secondary_overlay_text = st.text_input(
+                            "Secondary Text",
+                            value=f"Complete Guide • {metadata.get('category', 'Article')}",
+                            help="Subtitle or additional information"
+                        )
+                    
+                    # Image dimensions for overlay
+                    overlay_size = st.selectbox(
+                        "Output Size",
+                        ["Social Media (1200x675)", "Square (1080x1080)", "Story (1080x1920)", "Custom"],
+                        help="Choose the output dimensions"
+                    )
+                    
+                    if overlay_size == "Custom":
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            custom_width = st.number_input("Width", min_value=300, max_value=2000, value=1200)
+                        with col2:
+                            custom_height = st.number_input("Height", min_value=300, max_value=2000, value=675)
+                        output_size = (custom_width, custom_height)
+                    else:
+                        size_map = {
+                            "Social Media (1200x675)": (1200, 675),
+                            "Square (1080x1080)": (1080, 1080),
+                            "Story (1080x1920)": (1080, 1920)
+                        }
+                        output_size = size_map[overlay_size]
+                    
+                    if st.button("🎨 Apply Text Overlay", key=f"apply_overlay_{selected_file}"):
+                        with st.spinner("Applying text overlay..."):
+                            try:
+                                # Load the base image
+                                image_data = st.session_state["images"][selected_file]
+                                image_data["buffer"].seek(0)
+                                base_image = Image.open(image_data["buffer"])
+                                
+                                # Apply overlay
+                                final_image = create_property_overlay(
+                                    base_image,
+                                    primary_overlay_text,
+                                    secondary_overlay_text,
+                                    output_size
+                                )
+                                
+                                # Save the overlay image
+                                overlay_buffer = BytesIO()
+                                final_image.save(overlay_buffer, format='PNG')
+                                overlay_buffer.seek(0)
+                                
+                                # Update the image with overlay
+                                st.session_state["images"][selected_file] = {
+                                    "buffer": overlay_buffer,
+                                    "source": "overlay_applied",
+                                    "original_source": image_data.get("source", "unknown"),
+                                    "overlay_text": f"{primary_overlay_text} | {secondary_overlay_text}",
+                                    "size": output_size
+                                }
+                                
+                                st.success("✅ Text overlay applied!")
+                                st.image(overlay_buffer, caption=f"With Overlay: {article_data['title']}")
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error applying overlay: {str(e)}")
+            
+            # Show current image with management options
             if selected_file in st.session_state["images"]:
                 st.subheader("🖼️ Current Image")
-                st.image(st.session_state["images"][selected_file], caption=f"Current image for: {article_data['title']}")
                 
-                if st.button("🗑️ Remove Current Image"):
-                    del st.session_state["images"][selected_file]
-                    st.success("✅ Image removed!")
-                    st.rerun()
+                image_data = st.session_state["images"][selected_file]
+                st.image(image_data["buffer"], caption=f"Current image for: {article_data['title']}")
+                
+                # Image management buttons
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("🗑️ Remove Image", key=f"remove_img_{selected_file}"):
+                        del st.session_state["images"][selected_file]
+                        st.success("✅ Image removed!")
+                        st.rerun()
+                
+                with col2:
+                    # Download button
+                    image_data["buffer"].seek(0)
+                    st.download_button(
+                        "⬇️ Download Image",
+                        image_data["buffer"],
+                        file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
+                        mime="image/png"
+                    )
+                
+                with col3:
+                    # Show image info
+                    if st.button("ℹ️ Image Info"):
+                        st.info(f"""
+                        **Source:** {image_data.get('source', 'Unknown')}
+                        **Size:** {image_data.get('size', 'Original')}
+                        **Overlay:** {'Yes' if 'overlay_text' in image_data else 'No'}
+                        """)
         
-        # Bulk image generation with AI prompts
+        # Bulk image generation
         st.subheader("🚀 Bulk Image Generation")
         
-        bulk_prompt_mode = st.radio(
-            "Bulk Generation Mode:",
-            ["🤖 AI-Generated Prompts", "📝 Custom Template", "⚡ Simple Default"]
+        bulk_image_source = st.radio(
+            "Bulk generation source:",
+            ["🤖 AI Generated Only", "📁 Skip articles with existing images"],
+            horizontal=True
         )
         
-        if bulk_prompt_mode == "📝 Custom Template":
-            bulk_template = st.text_area(
-                "Custom Prompt Template (use {keyword} and {title} as placeholders):",
-                value="Professional illustration about {keyword}, clean modern design, {title} concept, minimalist style",
-                help="Use {keyword} for primary keyword and {title} for article title"
+        if bulk_image_source == "🤖 AI Generated Only" and hf_client and current_api_key:
+            bulk_prompt_mode = st.radio(
+                "Bulk Generation Mode:",
+                ["🤖 AI-Generated Prompts", "📝 Custom Template", "⚡ Simple Default"]
             )
-        
-        if st.button("🎨 Generate Images for All Articles"):
-            progress_bar = st.progress(0)
-            success_count = 0
             
-            for i, file_name in enumerate(article_files):
-                article_data = st.session_state["uploaded_articles"][file_name]
-                metadata = st.session_state["article_metadata"][file_name]
-                
-                st.info(f"Generating image for: {article_data['title'][:50]}...")
-                
-                # Generate prompt based on mode
-                if bulk_prompt_mode == "🤖 AI-Generated Prompts" and current_api_key:
-                    optimized_prompt = generate_optimized_image_prompt(
-                        article_data['title'],
-                        article_data['content'],
-                        metadata.get('primary_keyword', ''),
-                        current_api_key,
-                        ai_provider
-                    )
-                elif bulk_prompt_mode == "📝 Custom Template":
-                    optimized_prompt = bulk_template.format(
-                        keyword=metadata.get('primary_keyword', article_data['title']),
-                        title=article_data['title']
-                    )
-                else:  # Simple Default
-                    optimized_prompt = f"Professional illustration about {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, minimalist style"
-                
-                # Generate image
-                image_buffer = generate_ai_image(optimized_prompt, hf_client)
-                
-                if image_buffer:
-                    st.session_state["images"][file_name] = image_buffer
-                    success_count += 1
-                
-                progress_bar.progress((i + 1) / len(article_files))
-                time.sleep(3)  # Rate limiting for image generation
+            if bulk_prompt_mode == "📝 Custom Template":
+                bulk_template = st.text_area(
+                    "Custom Prompt Template (use {keyword} and {title} as placeholders):",
+                    value="Professional illustration about {keyword}, clean modern design, {title} concept, minimalist style",
+                    help="Use {keyword} for primary keyword and {title} for article title"
+                )
             
-            st.success(f"✅ Generated {success_count}/{len(article_files)} images successfully!")
+            if st.button("🎨 Generate Images for All Articles"):
+                progress_bar = st.progress(0)
+                success_count = 0
+                
+                for i, file_name in enumerate(article_files):
+                    # Skip if image already exists and mode is set to skip
+                    if bulk_image_source == "📁 Skip articles with existing images" and file_name in st.session_state["images"]:
+                        continue
+                    
+                    article_data = st.session_state["uploaded_articles"][file_name]
+                    metadata = st.session_state["article_metadata"][file_name]
+                    
+                    st.info(f"Generating image for: {article_data['title'][:50]}...")
+                    
+                    # Generate prompt based on mode
+                    if bulk_prompt_mode == "🤖 AI-Generated Prompts":
+                        optimized_prompt = generate_optimized_image_prompt(
+                            article_data['title'],
+                            article_data['content'],
+                            metadata.get('primary_keyword', ''),
+                            current_api_key,
+                            ai_provider
+                        )
+                    elif bulk_prompt_mode == "📝 Custom Template":
+                        optimized_prompt = bulk_template.format(
+                            keyword=metadata.get('primary_keyword', article_data['title']),
+                            title=article_data['title']
+                        )
+                    else:  # Simple Default
+                        optimized_prompt = f"Professional illustration about {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, minimalist style"
+                    
+                    # Generate image
+                    image_buffer = generate_ai_image(optimized_prompt, hf_client)
+                    
+                    if image_buffer:
+                        st.session_state["images"][file_name] = {
+                            "buffer": image_buffer,
+                            "source": "ai_generated_bulk",
+                            "prompt": optimized_prompt
+                        }
+                        success_count += 1
+                    
+                    progress_bar.progress((i + 1) / len(article_files))
+                    time.sleep(3)  # Rate limiting for image generation
+                
+                st.success(f"✅ Generated {success_count} images successfully!")
         
         # Display all generated images
         if st.session_state["images"]:
@@ -926,28 +1378,42 @@ with tab3:
             
             # Grid display
             cols = st.columns(3)
-            for i, (file_name, image_buffer) in enumerate(st.session_state["images"].items()):
+            for i, (file_name, image_data) in enumerate(st.session_state["images"].items()):
                 with cols[i % 3]:
                     article_title = st.session_state["uploaded_articles"][file_name]['title']
-                    st.image(image_buffer, caption=article_title[:30] + "...")
+                    st.image(image_data["buffer"], caption=f"{article_title[:25]}...")
                     
-                    # Small regenerate button for each image
-                    if st.button(f"🔄", key=f"regen_{i}", help=f"Regenerate image for {article_title[:20]}..."):
-                        # Get the current prompt or create a default one
-                        if f"prompt_{file_name}" in st.session_state:
-                            prompt = st.session_state[f"prompt_{file_name}"]
-                        else:
-                            metadata = st.session_state["article_metadata"][file_name]
-                            prompt = f"Professional illustration about {metadata.get('primary_keyword', article_title)}, clean modern design, educational content, minimalist style"
-                        
-                        with st.spinner("Regenerating..."):
-                            new_image = generate_ai_image(prompt, hf_client)
-                            if new_image:
-                                st.session_state["images"][file_name] = new_image
-                                st.rerun()
+                    # Small management buttons for each image
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if st.button(f"🔄", key=f"regen_{i}", help=f"Regenerate image"):
+                            # Show regeneration options in expander
+                            with st.expander(f"Regenerate {article_title[:20]}..."):
+                                st.write("Choose regeneration method:")
+                                if st.button("🤖 AI Prompt", key=f"ai_regen_{i}"):
+                                    if current_api_key and hf_client:
+                                        metadata = st.session_state["article_metadata"][file_name]
+                                        new_prompt = generate_optimized_image_prompt(
+                                            article_title,
+                                            st.session_state["uploaded_articles"][file_name]['content'],
+                                            metadata.get('primary_keyword', ''),
+                                            current_api_key,
+                                            ai_provider
+                                        )
+                                        new_image = generate_ai_image(new_prompt, hf_client)
+                                        if new_image:
+                                            st.session_state["images"][file_name] = {
+                                                "buffer": new_image,
+                                                "source": "ai_regenerated",
+                                                "prompt": new_prompt
+                                            }
+                                            st.rerun()
+                    
+                    with col_b:
+                        if st.button(f"🗑️", key=f"del_{i}", help=f"Delete image"):
+                            del st.session_state["images"][file_name]
+                            st.rerun()
     
-    elif not hf_client:
-        st.error("❌ Hugging Face client not initialized. Check HF_TOKEN in secrets.")
     else:
         st.info("⚠️ Please complete Steps 1 and 2 first")
 
@@ -1080,6 +1546,24 @@ with tab5:
         with col2:
             global_tags = st.text_input("Additional Tags (comma-separated)", "education,india,guide")
         
+        # Tag management section
+        st.markdown('<div class="tag-box">', unsafe_allow_html=True)
+        st.subheader("🏷️ Enhanced Tag Management")
+        
+        # Show existing WordPress tags
+        if st.session_state.get("existing_tags"):
+            st.write(f"**Available WordPress Tags ({len(st.session_state['existing_tags'])}):**")
+            tag_names = [tag["name"] for tag in st.session_state["existing_tags"]]
+            st.write(", ".join(tag_names[:15]) + ("..." if len(tag_names) > 15 else ""))
+        
+        if st.button("🔄 Refresh WordPress Tags"):
+            existing_tags = get_wordpress_tags(wp_config)
+            st.session_state["existing_tags"] = existing_tags
+            st.success(f"✅ Refreshed {len(existing_tags)} tags from WordPress")
+            st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
         # Single article publishing
         st.subheader("📝 Publish Single Article")
         
@@ -1106,17 +1590,21 @@ with tab5:
             
             if st.button("📤 Publish Selected Article"):
                 with st.spinner("Publishing to WordPress..."):
+                    image_buffer = None
+                    if selected_file in st.session_state["images"]:
+                        image_buffer = st.session_state["images"][selected_file]["buffer"]
+                    
                     result = publish_to_wordpress(
                         metadata.get('seo_title', article_data['title']),
                         article_data['content'],
-                        st.session_state["images"].get(selected_file),
+                        image_buffer,
                         all_tags,
                         wp_config,
                         publish_now
                     )
                     
                     if result["success"]:
-                        st.success(f"✅ Published successfully!")
+                        st.markdown('<div class="success-box">✅ Published successfully!</div>', unsafe_allow_html=True)
                         st.success(f"🔗 **URL:** {result['url']}")
                         
                         # Log the publication
@@ -1124,7 +1612,8 @@ with tab5:
                             "article": metadata.get('seo_title', article_data['title']),
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "Published" if publish_now else "Draft"
+                            "status": "Published" if publish_now else "Draft",
+                            "has_image": "Yes" if selected_file in st.session_state["images"] else "No"
                         })
                     else:
                         st.error(f"❌ Publishing failed: {result['error']}")
@@ -1159,11 +1648,16 @@ with tab5:
                     if global_tags:
                         all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
                     
+                    # Get image if available
+                    image_buffer = None
+                    if file_name in st.session_state["images"]:
+                        image_buffer = st.session_state["images"][file_name]["buffer"]
+                    
                     # Publish
                     result = publish_to_wordpress(
                         metadata.get('seo_title', article_data['title']),
                         article_data['content'],
-                        st.session_state["images"].get(file_name),
+                        image_buffer,
                         all_tags,
                         wp_config,
                         publish_now
@@ -1178,7 +1672,8 @@ with tab5:
                             "article": metadata.get('seo_title', article_data['title']),
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "Published" if publish_now else "Draft"
+                            "status": "Published" if publish_now else "Draft",
+                            "has_image": "Yes" if file_name in st.session_state["images"] else "No"
                         })
                     else:
                         st.error(f"❌ Failed: {metadata.get('seo_title', article_data['title'])[:30]}...")
@@ -1186,7 +1681,7 @@ with tab5:
                     progress_bar.progress((i + 1) / len(ready_articles))
                     time.sleep(2)  # Rate limiting
                 
-                st.success(f"🎉 Bulk publishing completed! {success_count}/{len(ready_articles)} articles published successfully.")
+                st.markdown(f'<div class="success-box">🎉 Bulk publishing completed! {success_count}/{len(ready_articles)} articles published successfully.</div>', unsafe_allow_html=True)
         else:
             st.warning("⚠️ No articles ready for publishing. Complete Steps 1-2 first.")
     
@@ -1211,8 +1706,8 @@ with tab6:
         log_df = pd.DataFrame(st.session_state["publish_log"])
         st.dataframe(log_df, use_container_width=True)
         
-        # Analytics
-        col1, col2, col3 = st.columns(3)
+        # Enhanced Analytics
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Published", len(log_df))
         with col2:
@@ -1221,6 +1716,9 @@ with tab6:
         with col3:
             draft_count = len(log_df[log_df["status"] == "Draft"])
             st.metric("Drafts", draft_count)
+        with col4:
+            with_images = len(log_df[log_df.get("has_image", "No") == "Yes"])
+            st.metric("With Images", with_images)
         
         # Export log
         log_csv = log_df.to_csv(index=False)
@@ -1242,7 +1740,7 @@ with tab6:
         if selected_file:
             article_data = st.session_state["uploaded_articles"][selected_file]
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 # HTML export
                 st.download_button(
@@ -1261,6 +1759,20 @@ with tab6:
                     file_name=f"{article_data['title'][:30].replace(' ', '_')}.txt",
                     mime="text/plain"
                 )
+            
+            with col3:
+                # Image export (if available)
+                if selected_file in st.session_state["images"]:
+                    image_data = st.session_state["images"][selected_file]
+                    image_data["buffer"].seek(0)
+                    st.download_button(
+                        "⬇️ Download Image",
+                        image_data["buffer"],
+                        file_name=f"{article_data['title'][:30].replace(' ', '_')}.png",
+                        mime="image/png"
+                    )
+                else:
+                    st.button("⬇️ No Image", disabled=True)
         
         # Bulk export
         if st.button("📦 Create Complete Export Package"):
@@ -1269,12 +1781,14 @@ with tab6:
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                 # Add articles
                 for file_name, article_data in st.session_state["uploaded_articles"].items():
+                    safe_title = article_data['title'][:30].replace(' ', '_').replace('/', '_').replace('\\', '_')
+                    
                     # HTML version
-                    zip_file.writestr(f"articles/{article_data['title'][:30].replace(' ', '_')}.html", article_data['content'])
+                    zip_file.writestr(f"articles/{safe_title}.html", article_data['content'])
                     
                     # Text version
                     clean_content = re.sub(r'<[^>]+>', '', article_data['content'])
-                    zip_file.writestr(f"articles_text/{article_data['title'][:30].replace(' ', '_')}.txt", clean_content)
+                    zip_file.writestr(f"articles_text/{safe_title}.txt", clean_content)
                 
                 # Add metadata
                 if st.session_state["article_metadata"]:
@@ -1304,10 +1818,12 @@ with tab6:
                     zip_file.writestr("logs/publication_log.csv", log_csv)
                 
                 # Add images
-                for file_name, image_buffer in st.session_state["images"].items():
+                for file_name, image_data in st.session_state["images"].items():
                     article_title = st.session_state["uploaded_articles"][file_name]['title']
-                    image_buffer.seek(0)
-                    zip_file.writestr(f"images/{article_title[:30].replace(' ', '_')}.png", image_buffer.read())
+                    safe_title = article_title[:30].replace(' ', '_').replace('/', '_').replace('\\', '_')
+                    
+                    image_data["buffer"].seek(0)
+                    zip_file.writestr(f"images/{safe_title}.png", image_data["buffer"].read())
             
             zip_buffer.seek(0)
             
@@ -1401,19 +1917,20 @@ with tab7:
         **For Best Results:**
         
         1. **Article Upload**: Use well-formatted HTML files for best metadata extraction
-        2. **File Naming**: Use descriptive filenames that reflect the article topic
-        3. **Content Quality**: Ensure articles are complete with proper headings and structure
-        4. **Rate Limiting**: The system includes automatic delays to respect API limits
-        5. **Image Generation**: AI-optimized prompts work better than generic descriptions
+        2. **Tag Management**: Test WordPress connection to fetch existing tags before publishing
+        3. **Image Generation**: Use AI-optimized prompts for better results, add text overlays for marketing appeal
+        4. **Image Management**: Upload existing images or generate new ones, delete unwanted images easily
+        5. **Text Overlays**: Use MagicBricks-style overlays for professional marketing images
         6. **Internal Linking**: Fetch existing posts before running bulk operations
-        7. **WordPress**: Test connection before bulk publishing
+        7. **WordPress**: Test connection before bulk publishing, tags will be created if they don't exist
         8. **Backup**: Always export your work before major operations
         
-        **Troubleshooting:**
-        - If API calls fail, check your keys and try a different provider
-        - For WordPress issues, verify your application password is correct
-        - Large images may take longer to upload to WordPress
-        - Some WordPress themes may require specific image formats
+        **New Features:**
+        - **Enhanced Tag Handling**: Automatically fetches existing WordPress tags and creates new ones as needed
+        - **Image Upload Option**: Upload existing images instead of generating new ones
+        - **Text Overlays**: Add professional marketing text overlays to images with custom sizing
+        - **Image Management**: Easy delete/regenerate options for all images
+        - **Improved Error Handling**: Better error messages and fallback options
         """)
 
 # Footer
@@ -1421,6 +1938,6 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p>📚 Enhanced SEO Content Automation Pipeline | Built with Streamlit</p>
-    <p>Upload → Analyze → Optimize → Link → Publish | Streamlined content workflow for any WordPress site</p>
+    <p>Upload → Analyze → Optimize → Link → Publish | Complete workflow with image management and text overlays</p>
 </div>
 """, unsafe_allow_html=True)
