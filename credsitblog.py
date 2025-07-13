@@ -745,10 +745,10 @@ with tab2:
 with tab3:
     st.header("🖼️ Step 3: AI-Optimized Image Generation")
     
-    if st.session_state["uploaded_articles"] and st.session_state["article_metadata"] and hf_client and current_api_key:
+    if st.session_state["uploaded_articles"] and st.session_state["article_metadata"] and hf_client:
         st.subheader("Generate Optimized Images")
         
-        # Single image generation
+        # Single image generation with editable prompts
         article_files = [f for f in st.session_state["uploaded_articles"].keys() if f in st.session_state["article_metadata"]]
         selected_file = st.selectbox("Select article for image generation", article_files, key="img_select")
         
@@ -756,39 +756,134 @@ with tab3:
             article_data = st.session_state["uploaded_articles"][selected_file]
             metadata = st.session_state["article_metadata"][selected_file]
             
-            col1, col2 = st.columns(2)
+            st.write(f"**Article:** {article_data['title']}")
+            st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'N/A')}")
+            st.write(f"**Category:** {metadata.get('category', 'N/A')}")
+            
+            # Initialize session state for prompts
+            if f"prompt_{selected_file}" not in st.session_state:
+                st.session_state[f"prompt_{selected_file}"] = ""
+            
+            col1, col2 = st.columns([1, 1])
+            
             with col1:
-                st.write(f"**Article:** {article_data['title']}")
-                st.write(f"**Primary Keyword:** {metadata.get('primary_keyword', 'N/A')}")
-                st.write(f"**Category:** {metadata.get('category', 'N/A')}")
+                # Button to generate AI prompt
+                if st.button("🤖 Generate AI Prompt", key="gen_prompt"):
+                    if current_api_key:
+                        with st.spinner("Creating optimized prompt..."):
+                            optimized_prompt = generate_optimized_image_prompt(
+                                article_data['title'],
+                                article_data['content'],
+                                metadata.get('primary_keyword', ''),
+                                current_api_key,
+                                ai_provider
+                            )
+                            st.session_state[f"prompt_{selected_file}"] = optimized_prompt
+                            st.rerun()
+                    else:
+                        st.error(f"❌ {ai_provider} API key required for AI prompt generation")
             
             with col2:
-                if st.button("🎨 Generate Optimized Image"):
-                    with st.spinner("Creating optimized image prompt..."):
-                        # Generate optimized prompt using AI
-                        optimized_prompt = generate_optimized_image_prompt(
-                            article_data['title'],
-                            article_data['content'],
-                            metadata.get('primary_keyword', ''),
-                            current_api_key,
-                            ai_provider
-                        )
+                # Button to use default prompt
+                if st.button("📝 Use Default Prompt", key="default_prompt"):
+                    default_prompt = f"Professional illustration for {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, high quality, minimalist style"
+                    st.session_state[f"prompt_{selected_file}"] = default_prompt
+                    st.rerun()
+            
+            # Editable prompt text area
+            image_prompt = st.text_area(
+                "✏️ **Edit Image Prompt** (You can modify this before generating):",
+                value=st.session_state[f"prompt_{selected_file}"],
+                height=100,
+                help="Describe the image you want. For best results with Stable Diffusion: use simple, clear descriptions, avoid complex scenes, focus on single subjects, use professional style keywords."
+            )
+            
+            # Prompt suggestions
+            with st.expander("💡 Prompt Suggestions & Tips"):
+                st.markdown("""
+                **Good prompt examples:**
+                - `Professional infographic about [topic], clean blue design, modern layout, minimalist`
+                - `Educational illustration, simple diagram style, white background, professional`
+                - `Modern website mockup showing [concept], clean interface, blue gradient`
+                - `Business presentation slide design, [topic] theme, professional layout`
+                
+                **Tips for better images:**
+                - Keep prompts simple and clear (20-50 words)
+                - Use style keywords: professional, clean, modern, minimalist
+                - Specify colors: blue, white, gradient
+                - Avoid complex scenes or multiple objects
+                - Include format: illustration, infographic, diagram, mockup
+                """)
+            
+            # Preset prompt buttons
+            st.write("**🎨 Quick Preset Prompts:**")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📊 Infographic Style"):
+                    preset = f"Professional infographic about {metadata.get('primary_keyword', 'topic')}, clean blue and white design, modern layout, data visualization, minimalist style"
+                    st.session_state[f"prompt_{selected_file}"] = preset
+                    st.rerun()
+            
+            with col2:
+                if st.button("💻 Tech/Digital Style"):
+                    preset = f"Modern digital illustration about {metadata.get('primary_keyword', 'technology')}, sleek interface design, blue gradient background, professional tech style"
+                    st.session_state[f"prompt_{selected_file}"] = preset
+                    st.rerun()
+            
+            with col3:
+                if st.button("📚 Educational Style"):
+                    preset = f"Educational illustration about {metadata.get('primary_keyword', 'subject')}, simple diagram style, clean white background, learning concept, professional design"
+                    st.session_state[f"prompt_{selected_file}"] = preset
+                    st.rerun()
+            
+            # Update the prompt in session state when text area changes
+            if image_prompt != st.session_state[f"prompt_{selected_file}"]:
+                st.session_state[f"prompt_{selected_file}"] = image_prompt
+            
+            # Generate image button
+            if st.button("🎨 Generate Image", type="primary"):
+                if image_prompt.strip():
+                    with st.spinner("Generating image..."):
+                        image_buffer = generate_ai_image(image_prompt.strip(), hf_client)
                         
-                        st.info(f"**Generated Prompt:** {optimized_prompt}")
-                        
-                        # Generate image
-                        with st.spinner("Generating image..."):
-                            image_buffer = generate_ai_image(optimized_prompt, hf_client)
-                            
-                            if image_buffer:
-                                st.session_state["images"][selected_file] = image_buffer
-                                st.success("✅ Image generated!")
-                                st.image(image_buffer, caption=f"Generated for: {article_data['title']}")
+                        if image_buffer:
+                            st.session_state["images"][selected_file] = image_buffer
+                            st.success("✅ Image generated successfully!")
+                            st.image(image_buffer, caption=f"Generated for: {article_data['title']}")
+                        else:
+                            st.error("❌ Image generation failed. Try a different prompt or check your HuggingFace token.")
+                else:
+                    st.error("❌ Please enter a prompt before generating an image.")
+            
+            # Show current image if exists
+            if selected_file in st.session_state["images"]:
+                st.subheader("🖼️ Current Image")
+                st.image(st.session_state["images"][selected_file], caption=f"Current image for: {article_data['title']}")
+                
+                if st.button("🗑️ Remove Current Image"):
+                    del st.session_state["images"][selected_file]
+                    st.success("✅ Image removed!")
+                    st.rerun()
         
-        # Bulk image generation
+        # Bulk image generation with AI prompts
         st.subheader("🚀 Bulk Image Generation")
+        
+        bulk_prompt_mode = st.radio(
+            "Bulk Generation Mode:",
+            ["🤖 AI-Generated Prompts", "📝 Custom Template", "⚡ Simple Default"]
+        )
+        
+        if bulk_prompt_mode == "📝 Custom Template":
+            bulk_template = st.text_area(
+                "Custom Prompt Template (use {keyword} and {title} as placeholders):",
+                value="Professional illustration about {keyword}, clean modern design, {title} concept, minimalist style",
+                help="Use {keyword} for primary keyword and {title} for article title"
+            )
+        
         if st.button("🎨 Generate Images for All Articles"):
             progress_bar = st.progress(0)
+            success_count = 0
             
             for i, file_name in enumerate(article_files):
                 article_data = st.session_state["uploaded_articles"][file_name]
@@ -796,40 +891,63 @@ with tab3:
                 
                 st.info(f"Generating image for: {article_data['title'][:50]}...")
                 
-                # Generate optimized prompt
-                optimized_prompt = generate_optimized_image_prompt(
-                    article_data['title'],
-                    article_data['content'],
-                    metadata.get('primary_keyword', ''),
-                    current_api_key,
-                    ai_provider
-                )
+                # Generate prompt based on mode
+                if bulk_prompt_mode == "🤖 AI-Generated Prompts" and current_api_key:
+                    optimized_prompt = generate_optimized_image_prompt(
+                        article_data['title'],
+                        article_data['content'],
+                        metadata.get('primary_keyword', ''),
+                        current_api_key,
+                        ai_provider
+                    )
+                elif bulk_prompt_mode == "📝 Custom Template":
+                    optimized_prompt = bulk_template.format(
+                        keyword=metadata.get('primary_keyword', article_data['title']),
+                        title=article_data['title']
+                    )
+                else:  # Simple Default
+                    optimized_prompt = f"Professional illustration about {metadata.get('primary_keyword', article_data['title'])}, clean modern design, educational content, minimalist style"
                 
                 # Generate image
                 image_buffer = generate_ai_image(optimized_prompt, hf_client)
                 
                 if image_buffer:
                     st.session_state["images"][file_name] = image_buffer
+                    success_count += 1
                 
                 progress_bar.progress((i + 1) / len(article_files))
                 time.sleep(3)  # Rate limiting for image generation
             
-            st.success(f"✅ Generated {len(st.session_state['images'])} images!")
+            st.success(f"✅ Generated {success_count}/{len(article_files)} images successfully!")
         
-        # Display generated images
+        # Display all generated images
         if st.session_state["images"]:
-            st.subheader("🖼️ Generated Images")
+            st.subheader(f"🖼️ Generated Images ({len(st.session_state['images'])})")
             
+            # Grid display
             cols = st.columns(3)
             for i, (file_name, image_buffer) in enumerate(st.session_state["images"].items()):
                 with cols[i % 3]:
                     article_title = st.session_state["uploaded_articles"][file_name]['title']
                     st.image(image_buffer, caption=article_title[:30] + "...")
+                    
+                    # Small regenerate button for each image
+                    if st.button(f"🔄", key=f"regen_{i}", help=f"Regenerate image for {article_title[:20]}..."):
+                        # Get the current prompt or create a default one
+                        if f"prompt_{file_name}" in st.session_state:
+                            prompt = st.session_state[f"prompt_{file_name}"]
+                        else:
+                            metadata = st.session_state["article_metadata"][file_name]
+                            prompt = f"Professional illustration about {metadata.get('primary_keyword', article_title)}, clean modern design, educational content, minimalist style"
+                        
+                        with st.spinner("Regenerating..."):
+                            new_image = generate_ai_image(prompt, hf_client)
+                            if new_image:
+                                st.session_state["images"][file_name] = new_image
+                                st.rerun()
     
     elif not hf_client:
-        st.error("❌ Hugging Face client not initialized")
-    elif not current_api_key:
-        st.error(f"❌ {ai_provider} API key not found")
+        st.error("❌ Hugging Face client not initialized. Check HF_TOKEN in secrets.")
     else:
         st.info("⚠️ Please complete Steps 1 and 2 first")
 
