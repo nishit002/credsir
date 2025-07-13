@@ -814,8 +814,8 @@ def apply_internal_links_to_content(content, links_data):
     
     return modified_content
 
-def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_now=True):
-    """Publish article to WordPress with enhanced tag handling"""
+def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_now=True, skip_tags=False):
+    """Publish article to WordPress with optional tag handling"""
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
     headers = {"Authorization": f"Basic {auth_token}"}
@@ -837,22 +837,38 @@ def publish_to_wordpress(title, content, image_buffer, tags, wp_config, publish_
             
             if img_resp.status_code == 201:
                 img_id = img_resp.json()["id"]
+                st.info(f"✅ Image uploaded successfully for: {title[:30]}...")
+            else:
+                st.warning(f"⚠️ Image upload failed for: {title[:30]}... (will publish without image)")
         except Exception as e:
-            st.error(f"Image upload error: {str(e)}")
+            st.warning(f"⚠️ Image upload error for {title[:30]}...: {str(e)}")
     
-    # Handle tags with enhanced error handling
+    # Handle tags only if not skipping
     tag_ids = []
-    if tags:
-        tag_ids = create_or_get_tags(tags, wp_config)
+    if not skip_tags and tags:
+        try:
+            st.info(f"Processing tags for: {title[:30]}...")
+            tag_ids = create_or_get_tags(tags, wp_config)
+            if tag_ids:
+                st.success(f"✅ Processed {len(tag_ids)} tags for: {title[:30]}...")
+            else:
+                st.warning(f"⚠️ No tags created for: {title[:30]}... (will publish without tags)")
+        except Exception as e:
+            st.warning(f"⚠️ Tag processing failed for {title[:30]}...: {str(e)} (will publish without tags)")
+            tag_ids = []
     
     # Publish article
     post_data = {
         "title": title,
         "content": content,
-        "status": "publish" if publish_now else "draft",
-        "tags": tag_ids
+        "status": "publish" if publish_now else "draft"
     }
     
+    # Only add tags if we have them and not skipping
+    if tag_ids and not skip_tags:
+        post_data["tags"] = tag_ids
+    
+    # Only add image if upload was successful
     if img_id:
         post_data["featured_media"] = img_id
     
@@ -1707,25 +1723,39 @@ with tab5:
             publish_now = publish_mode == "Publish Immediately"
         
         with col2:
+            skip_tags = st.checkbox("Skip Tags & Categories", 
+                                   value=False, 
+                                   help="Publish without tags/categories (you can add them later in WordPress)")
+        
+        if not skip_tags:
             global_tags = st.text_input("Additional Tags (comma-separated)", "education,india,guide")
+        else:
+            global_tags = ""
+            st.info("ℹ️ Articles will be published without tags. You can add them later in WordPress admin.")
         
-        # Tag management section
-        st.markdown('<div class="tag-box">', unsafe_allow_html=True)
-        st.subheader("🏷️ Enhanced Tag Management")
-        
-        # Show existing WordPress tags
-        if st.session_state.get("existing_tags"):
-            st.write(f"**Available WordPress Tags ({len(st.session_state['existing_tags'])}):**")
-            tag_names = [tag["name"] for tag in st.session_state["existing_tags"]]
-            st.write(", ".join(tag_names[:15]) + ("..." if len(tag_names) > 15 else ""))
-        
-        if st.button("🔄 Refresh WordPress Tags"):
-            existing_tags = get_wordpress_tags(wp_config)
-            st.session_state["existing_tags"] = existing_tags
-            st.success(f"✅ Refreshed {len(existing_tags)} tags from WordPress")
-            st.rerun()
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+        # Tag management section (only show if not skipping tags)
+        if not skip_tags:
+            st.markdown('<div class="tag-box">', unsafe_allow_html=True)
+            st.subheader("🏷️ Enhanced Tag Management")
+            
+            # Show existing WordPress tags
+            if st.session_state.get("existing_tags"):
+                st.write(f"**Available WordPress Tags ({len(st.session_state['existing_tags'])}):**")
+                tag_names = [tag["name"] for tag in st.session_state["existing_tags"]]
+                st.write(", ".join(tag_names[:15]) + ("..." if len(tag_names) > 15 else ""))
+            
+            if st.button("🔄 Refresh WordPress Tags"):
+                existing_tags = get_wordpress_tags(wp_config)
+                st.session_state["existing_tags"] = existing_tags
+                if existing_tags:
+                    st.success(f"✅ Refreshed {len(existing_tags)} tags from WordPress")
+                else:
+                    st.warning("⚠️ Could not fetch tags from WordPress. Consider using 'Skip Tags' option.")
+                st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("🏷️ Tag management is disabled. Articles will be published without tags.")
         
         # Single article publishing
         st.subheader("📝 Publish Single Article")
@@ -1745,10 +1775,13 @@ with tab5:
                 st.write(f"**Has Image:** {'✅' if selected_file in st.session_state['images'] else '❌'}")
             
             with col2:
-                all_tags = metadata.get('tags', [])
-                if global_tags:
-                    all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
-                st.write(f"**Tags:** {', '.join(all_tags)}")
+                all_tags = []
+                if not skip_tags:
+                    all_tags = metadata.get('tags', [])
+                    if global_tags:
+                        all_tags.extend([tag.strip() for tag in global_tags.split(',') if tag.strip()])
+                
+                st.write(f"**Tags:** {', '.join(all_tags) if all_tags else 'None (will be added later)'}")
                 st.write(f"**Status:** {publish_mode}")
             
             if st.button("📤 Publish Selected Article"):
@@ -1769,7 +1802,8 @@ with tab5:
                         image_buffer,
                         all_tags,
                         wp_config,
-                        publish_now
+                        publish_now,
+                        skip_tags
                     )
                     
                     if result["success"]:
@@ -1782,7 +1816,8 @@ with tab5:
                             "url": result["url"],
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "status": "Published" if publish_now else "Draft",
-                            "has_image": "Yes" if selected_file in st.session_state["images"] else "No"
+                            "has_image": "Yes" if selected_file in st.session_state["images"] else "No",
+                            "has_tags": "Yes" if (all_tags and not skip_tags) else "No"
                         })
                     else:
                         st.error(f"❌ Publishing failed: {result['error']}")
@@ -1876,7 +1911,7 @@ with tab6:
         st.dataframe(log_df, use_container_width=True)
         
         # Enhanced Analytics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Total Published", len(log_df))
         with col2:
@@ -1888,6 +1923,9 @@ with tab6:
         with col4:
             with_images = len(log_df[log_df.get("has_image", "No") == "Yes"])
             st.metric("With Images", with_images)
+        with col5:
+            with_tags = len(log_df[log_df.get("has_tags", "No") == "Yes"])
+            st.metric("With Tags", with_tags)
         
         # Export log
         log_csv = log_df.to_csv(index=False)
