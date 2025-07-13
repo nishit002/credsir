@@ -845,6 +845,19 @@ def prepare_article_html(content, metadata):
 
 def publish_to_wordpress_streamlined(title, content, metadata, image_buffer, wp_config, publish_now=True):
     """Streamlined WordPress publishing - never halts, always publishes"""
+    try:
+        auth_str = f"{wp_config['username']}:{wp_config['password']}"
+        ...
+        return {
+            "success": True,
+            "url": post_url
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
     
     auth_str = f"{wp_config['username']}:{wp_config['password']}"
     auth_token = base64.b64encode(auth_str.encode()).decode("utf-8")
