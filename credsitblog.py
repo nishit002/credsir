@@ -1883,7 +1883,6 @@ with tab5:
                        article_data['content'],                           # content
                        metadata,                                          # ✅ pass full metadata
                        image_buffer,                                      # image buffer
-                       all_tags,                                          # tags
                        wp_config,                                         # WP credentials
                        publish_now                                        # draft or publish
                     )
